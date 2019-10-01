@@ -304,7 +304,7 @@ try:
                     timers.serTimeSent = time.time()
                 else:
                     n = fp.write(toSerial)
-                logger.info('Wrote %s to serial, %s', n, toSerial)
+                # logger.info('Wrote %s to serial, %s', n, toSerial)
                 toSerial = toSerial[n:]
             elif fp == rudics:
                 if timers.dtRUDICS > 0:
@@ -313,6 +313,7 @@ try:
                     timers.dsTimeSent = time.time()
                 else:
                     n = fp.send(toRUDICS)
+                    # logger.info('Wrote %s to RUDICS, %s', n, toRUDICS)
                 if n == 0:
                     logger.info('Closing due to n==0')
                     rudics = closeRUDICS(rudics, args, logger)
@@ -323,6 +324,7 @@ try:
         for fp in readable:
             if fp == ifp: # From serial port
                 c = fp.read(1) # Read a character
+                # logger.info('Serial c=%s', c)
                 if not len(c): # End of file?
                     ifp.close() # Close the port/file
                     ifp = None
@@ -332,7 +334,7 @@ try:
                 lineSerial += c
                 if qConnected:
                     toRUDICS += c
-                if c == b'\r': # End of a lineSerial, so check if a trigger activated
+                if c == b'\n': # End of a lineSerial, so check if a trigger activated
                     logger.info('Serial=%s', bytes(lineSerial))
                     if not qConnected and re.search(args.triggerOn, lineSerial):
                         logger.info('TriggerOn')
@@ -343,14 +345,15 @@ try:
                     lineSerial = bytearray()
             elif fp == rudics: # Read from RUDICS connection
                 c = fp.recv(8192) # Read what is available up to 8192 bytes
+                # logger.info('RUDICS c=%s', c)
                 if len(c): # Something read
                     toSerial += c
                     lineRUDICS += c
-                    if c.find(b'\r') >= 0:
-                        parts = lineRUDICS.split(b'\r')
+                    if c.find(b'\n') >= 0:
+                        parts = lineRUDICS.split(b'\n')
                         for index in range(len(parts)-1):
                             logger.info('RUDICS=%s', bytes(parts[index]))
-                        if c[-1] == b'\r': #
+                        if c[-1] == b'\n': #
                             logger.info('RUDICS=%s', bytes(parts[-1]))
                             lineRUDICS = bytearray()
                         else:
