@@ -1,0 +1,30 @@
+#
+# Map a serial port to a RUDICS port on a dockserver
+#
+# sudo cp USB2ToRUDICS.service /etc/systemd/system/
+#
+# sudo systemctl daemon-reload
+# sudo systemctl enable USB2ToRUDICS.service
+# sudo systemctl start USB2ToRUDICS.service
+#
+# Sep-2019, Pat Welch, pat@mousebrains.com
+
+[Unit]
+Description=USB2 to RUDICS service
+
+[Service]
+# Type=simple # Default
+User=pat
+Group=dialout
+WorkingDirectory=/home/pat/Serial2RUDICS/logs
+#
+ExecStart=/home/pat/Serial2RUDICS/serial2RUDICS.py \
+	--host=localhost \
+	--serial=/dev/ttyUSB2 \
+	--logfile=usb2.log
+RestartSec=60
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+
