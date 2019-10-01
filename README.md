@@ -18,3 +18,7 @@ Initially all output is sent to the dockserver via a RUDICS style connection. Th
 Usage:
 
 serial2RUDICS --host=localhost --serial=/dev/ttyUSB0
+
+To see all the command line options use:
+
+serial2RUDICS --help
