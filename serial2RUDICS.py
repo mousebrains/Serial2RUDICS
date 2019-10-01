@@ -15,6 +15,7 @@ import math
 import argparse
 import socket
 import select
+import serial
 import re
 import logging
 import logging.handlers
@@ -199,7 +200,7 @@ grp.add_argument('--baudrate', type=int, choices=baudrates, default=115200,
         help='Serial port baudrate')
 grp.add_argument('--parity', type=str, choices=['none', 'even', 'odd', 'mark', 'space'], 
         default='none', help='Serial port parity')
-grp.add_argument('--bytesize', type=int, choices=[5, 6, 7, 8], default=1, help='Bits/byte')
+grp.add_argument('--bytesize', type=int, choices=[5, 6, 7, 8], default=8, help='Bits/byte')
 grp.add_argument('--stopbits', type=float, choices=[1, 1.5, 2], 
         default=1, help='Number of stop bits')
 grp.add_argument('--serBaudrate', type=int, choices=baudrates,
@@ -361,7 +362,8 @@ try:
 
 finally:
     logger.info('Fell out of loop into finally')
-    if ifp is not None:
+    # Check ifp/rudics are defined before testing them, just in case
+    if ('ifp' in vars()) and (ifp is not None):
         ifp.close()
-    if rudics is not None:
+    if ('rudics' in vars()) and (rudics is not None):
         closeRUDICS(rudics, args, logger)
