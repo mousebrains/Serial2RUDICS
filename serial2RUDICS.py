@@ -219,7 +219,8 @@ grp.add_argument('--logCount', type=int, default=3, help='Number of backup files
 grp.add_argument('--verbose', action='store_true', help='Enable verbose logging')
 
 grp = parser.add_argument_group('Trigger on/off Options')
-grp.add_argument('--triggerOff', default='surface_[0-9]+: Waiting for final GPS fix.',
+grp.add_argument('--triggerOff', 
+        default='surface_[0-9]+: .*Waiting for final GPS fix',
         help='shutdown Dockserver connection after this line seen')
 grp.add_argument('--triggerOn', 
         default='behavior surface_[0-9]+: SUBSTATE [0-9]+ ->[0-9]+ : Picking iridium or freewave',
