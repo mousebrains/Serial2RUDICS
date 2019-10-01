@@ -21,7 +21,7 @@ WorkingDirectory=/home/pat/Serial2RUDICS/logs
 ExecStart=/home/pat/Serial2RUDICS/serial2RUDICS.py \
 	--host=localhost \
 	--serial=/dev/ttyUSB3 \
-	--logfile=usb2.log
+	--logfile=usb3.log
 RestartSec=60
 Restart=always
 
