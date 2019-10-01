@@ -22,3 +22,10 @@ serial2RUDICS --host=localhost --serial=/dev/ttyUSB0
 To see all the command line options use:
 
 serial2RUDICS --help
+
+
+# Notes:
+
+This is a Python 3 program. It has been tested on a Mac running Python 3.7.3 and on CentOS running Pythoon 3.6.8.
+
+The only non-standard Python module you might have to install is pyserial.
