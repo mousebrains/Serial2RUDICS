@@ -228,8 +228,8 @@ grp.add_argument('--triggerOn',
 
 args = parser.parse_args()
 
-args.triggerOn  = bytes(args.triggerOn,  'utf-8')
-args.triggerOff = bytes(args.triggerOff, 'utf-8')
+triggerOn  = re.compile(bytes(args.triggerOn,  'utf-8'), re.IGNORECASE)
+triggerOff = re.compile(bytes(args.triggerOff, 'utf-8'), re.IGNORECASE)
 
 logger = mkLogger(args)
 logger.info('args=%s', args)
@@ -341,10 +341,10 @@ try:
                     toRUDICS += c
                 if c == b'\n': # End of a lineSerial, so check if a trigger activated
                     logger.info('Serial=%s', bytes(lineSerial))
-                    if not qConnected and re.search(args.triggerOn, lineSerial):
+                    if not qConnected and triggerOn.search(lineSerial):
                         logger.info('TriggerOn')
                         qConnected = True
-                    elif qConnected and re.search(args.triggerOff, lineSerial):
+                    elif qConnected and triggerOff.search(lineSerial):
                         logger.info('TriggerOff')
                         qConnected = False
                     lineSerial = bytearray()
