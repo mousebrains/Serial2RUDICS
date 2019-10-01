@@ -24,7 +24,9 @@ def mkLogger(args):
     logger = logging.getLogger()
 
     if args.logfile:
-        ch = logging.handlers.RotatingFileHandler(args.logfile, maxBytes=1000000)
+        ch = logging.handlers.RotatingFileHandler(args.logfile, \
+                maxBytes=args.logBytes,
+                backupCount=args.logCount)
     else:
         ch = logging.StreamHandler()
 
@@ -212,6 +214,8 @@ grp.add_argument('--output', type=str, default='/dev/null',
 
 grp = parser.add_argument_group('Logger Related Options')
 grp.add_argument('--logfile', help='Name of logfile')
+grp.add_argument('--logBytes', type=int, default=10000000, help='Maximum logfile size in bytes')
+grp.add_argument('--logCount', type=int, default=3, help='Number of backup files to keep')
 grp.add_argument('--verbose', action='store_true', help='Enable verbose logging')
 
 grp = parser.add_argument_group('Trigger on/off Options')
