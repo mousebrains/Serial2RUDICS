@@ -220,10 +220,10 @@ grp.add_argument('--verbose', action='store_true', help='Enable verbose logging'
 
 grp = parser.add_argument_group('Trigger on/off Options')
 grp.add_argument('--triggerOff', 
-        default='surface_[0-9]+: .*Waiting for final GPS fix',
+        default='surface_[0-9]+:\s+.*Waiting\s+for\s+final\s+GPS\s+fix',
         help='shutdown Dockserver connection after this line seen')
 grp.add_argument('--triggerOn', 
-        default='behavior surface_[0-9]+: SUBSTATE [0-9]+ ->[0-9]+ : Picking iridium or freewave',
+        default='behavior\s+surface_[0-9]+:\s+SUBSTATE\s+[0-9]+\s+->[0-9]+\s+:\s+Picking\s+iridium\s+or\s+freewave',
         help='Start Dockserver connection after this line seen')
 
 args = parser.parse_args()
