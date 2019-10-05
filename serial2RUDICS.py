@@ -223,7 +223,7 @@ grp.add_argument('--triggerOff',
         default='surface_[0-9]+:\s+.*Waiting\s+for\s+final\s+GPS\s+fix',
         help='shutdown Dockserver connection after this line seen')
 grp.add_argument('--triggerOn', 
-        default='behavior\s+surface_[0-9]+:\s+SUBSTATE\s+[0-9]+\s+->[0-9]+\s+:\s+Picking\s+iridium\s+or\s+freewave',
+        default='(behavior\s+surface_[0-9]+:\s+SUBSTATE\s+[0-9]+\s+->[0-9]+\s+:\s+Picking\s+iridium\s+or\s+freewave|:\s+abort_the_mission)',
         help='Start Dockserver connection after this line seen')
 
 args = parser.parse_args()
