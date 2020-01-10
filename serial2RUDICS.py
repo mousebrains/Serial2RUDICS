@@ -84,15 +84,17 @@ class SimRUDICS:
 def openRUDICS(args, logger):
     if args.simDS:
         return SimRUDICS(args.dsInput, args.dsOutput)
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(None) # Non-blocking
-        s.connect((args.host, args.port)) # Connect to RUDICS listener on a Dockserver
-        logger.info('Connected to %s:%s', args.host, args.port)
-        return s
-    except Exception as e:
-        logger.exception('Unexpected error connecting to %s:%s', args.host, args.port)
-    return None
+    while True:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(None) # Non-blocking
+            s.connect((args.host, args.port)) # Connect to RUDICS listener on a Dockserver
+            logger.info('Connected to %s:%s', args.host, args.port)
+            return s
+        except Exception as e:
+            logger.exception('Unexpected error connecting to %s:%s, sleeping for %s seconds', 
+                             args.host, args.port, args.RUDICSdelay)
+            time.sleep(args.RUDICSdelay)
 
 def closeRUDICS(s, args, logger):
     if args.simDS:
@@ -186,6 +188,8 @@ grp.add_argument('--dsSpacing', type=float, default=10,
         help='Delay between closing a Dockserver connection and opening a new one in seconds')
 grp.add_argument('--dsBaudrate', type=int, choices=baudrates,
         help='Baudrate to feed characters to the dockserver at')
+grp.add_argument('--RUDICSdelay', type=int, default=120, 
+        help="Delay between retrys at connecting")
 
 grp = parser.add_argument_group('Simulated Dockserver Options')
 grp.add_argument('--dsInput', type=str,  
