@@ -29,21 +29,16 @@ def doit(serial:RealSerial, rudics:RUDICS, logger:logging.Logger) -> None:
 
         ifps = [] # input file numbers to select on
         ofps = [] # output file numbers to select on
-        efps = [] # exception file numbers to select on
 
-        if ifpSerial is not None: 
-            ifps.append(ifpSerial)
-            efps.append(ifpSerial)
+        if ifpSerial is not None: ifps.append(ifpSerial)
         if ofpSerial is not None: ofps.append(ofpSerial)
-        if ifpRUDICS is not None: 
-            ifps.append(ifpRUDICS)
-            efps.append(ifpRUDICS)
+        if ifpRUDICS is not None: ifps.append(ifpRUDICS)
         if ofpRUDICS is not None: ofps.append(ofpRUDICS)
 
         timeout = rudics.timeout()
-        # logger.info('timeout=%s ifps=%s ofps=%s efps=%s s %s r %s', 
-                # timeout, len(ifps), len(ofps), len(efps), len(serial.buffer), len(rudics.buffer))
-        [readable, writeable, exceptable] = select.select(ifps, ofps, efps, timeout)
+        # logger.info('timeout=%s ifps=%s ofps=%s s %s r %s', 
+                # timeout, len(ifps), len(ofps), len(serial.buffer), len(rudics.buffer))
+        [readable, writeable, exceptable] = select.select(ifps, ofps, ifps, timeout)
 
         if not readable and not writeable and not exceptable: # Timeout
             rudics.timedOut()
@@ -52,15 +47,15 @@ def doit(serial:RealSerial, rudics:RUDICS, logger:logging.Logger) -> None:
         for fp in exceptable: # Handle exceptions first
             # logger.info('exceptable fp=%s', fp)
             if fp == ifpSerial:
+                logger.warning('Select exception for serial connection')
                 serial.close() # Exception on the serial side
             else: # exception on the RUDICS side
+                logger.warning('Select exception for RUDICS connection')
                 rudics.close()
 
-        if exceptable: # Some exceptions so skip trying to read/write this time
-            continue
+        if exceptable: continue # Skip reading/writing this time if there are exceptions
 
         for fp in writeable:
-            # logger.info('writeable ofpSerial %s', fp == ofpSerial)
             if fp == ofpSerial:
                 serial.send()
             else: # RUDICS
@@ -68,7 +63,6 @@ def doit(serial:RealSerial, rudics:RUDICS, logger:logging.Logger) -> None:
 
 
         for fp in readable:
-            # logger.info('readable ifpSerial %s', fp == ifpSerial)
             if fp == ifpSerial:
                 c = serial.get(1) # Read a character
                 if len(c): 

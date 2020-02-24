@@ -15,8 +15,18 @@ class RUDICS:
     def __init__(self, args:argparse.ArgumentParser, logger:logging.Logger) -> None:
         self.args = args
         self.logger = logger
-        self.triggerOn  = re.compile(bytes(args.triggerOn,  'utf-8'), re.IGNORECASE)
-        self.triggerOff = re.compile(bytes(args.triggerOff, 'utf-8'), re.IGNORECASE)
+        self.triggerOn = self.__mkTrigger(args.triggerOn,
+                ['behavior surface_\d+:\s+SUBSTATE \d+ ->\d+ : Picking iridium or freewave'
+                    , 'end_gps_input[(][)]'
+                    , ':\s+abort_the_mission'
+                    ]
+                )
+                    # , 'init_gps_input[(][)]'
+        self.triggerOff = self.__mkTrigger(args.triggerOff,
+                ['behavior dive_to_\d+:\s+SUBSTATE \d+ ->\d+ : diving'
+                    , 'surface_\d+:\s+.*Waiting\s+for\s+final\s+GPS\s+fix'
+                    ]
+                )
         self.bytesPerSecond = \
                 None if (args.rudicsBaudrate is None) or (args.rudicsBaudrate < 1) \
                 else (9 / args.rudicsBaudrate) # Time to send 9 bits
@@ -28,18 +38,15 @@ class RUDICS:
         self.tNextSend = 0
         self.tNextOpen = 0
         self.tLastAction = None
-        self.qWantOpen = True # Initially I want to be open
+        self.qWantOpen = not args.disconnected # Initially connection state
         self.s = None
 
     @staticmethod
     def addArgs(parser:argparse.ArgumentParser) -> None:
         grp = parser.add_argument_group('RUDICS Trigger on/off Options')
-        grp.add_argument('--triggerOff',
-                default='surface_[0-9]+:\s+.*Waiting\s+for\s+final\s+GPS\s+fix',
+        grp.add_argument('--triggerOff', action='append',
                 help='Shutdown Dockserver connection after this line seen')
-        grp.add_argument('--triggerOn',
-                default=
-                '(behavior\s+surface_[0-9]+:\s+SUBSTATE\s+[0-9]+\s+->[0-9]+\s+:\s+Picking\s+iridium\s+or\s+freewave|:\s+abort_the_mission)',
+        grp.add_argument('--triggerOn', action='append', 
                 help='Start Dockserver connection after this line seen')
         grp.add_argument('--idleTimeout', type=int, default=3600,
                 help='If not input from either the serial or socket in this period of time, drop the connection')
@@ -57,12 +64,25 @@ class RUDICS:
         grp.add_argument('--rudicsMaxOpenTimeDelay', type=int, default=1800,
                 help="Time after a forced RUDICS disconnect until reopening")
 
+        grp.add_argument('--disconnected', action='store_true',
+                help='Should the initial state be disconnected?')
+
     def __del__(self) -> None: # Destructor
         self.logger.info('Destroying RUDICS')
         self.close()
 
     def __bool__(self) -> bool:
         return (self.s is not None) and (len(self.buffer) > 0)
+
+    def __mkTrigger(self, items:list, defaults:list):
+        # If items has only one item, then that is the pattern
+        if not items:
+            items = defaults
+        if len(items) == 1:
+            a = items[0]
+        else:
+            a = '(' + '|'.join(items) + ')'
+        return re.compile(bytes(a, 'utf-8'), re.IGNORECASE)
 
     def timeout(self) -> float:
         now = time.time()
@@ -81,12 +101,16 @@ class RUDICS:
         return dt
 
     def timedOut(self) -> None:
-        self.logger.info('Idle timeout')
-        self.close()
-        self.tLastAction = time.time()
+        if self.tLastOpen <= 0: return
+        now = time.time()
+        dt = now - self.tLastOpen # Time since last 
+        if dt >= self.args.idleTimeout:
+            self.logger.info('Idle timeout')
+            self.close()
+            self.tLastAction = now
 
     def send(self) -> None:
-        self.logger.info('RUDICS:send')
+        self.logger.debug('RUDICS:send')
         now = time.time()
 
         if (self.s is None) or (not len(self.buffer)) or (self.tNextSend >= now):
@@ -106,7 +130,7 @@ class RUDICS:
         else:
             m = self.write(self.buffer[0:n])
 
-        self.logger.info('RUDICS:sent full buffer m=%s n=%s len=%s buffer=%s', 
+        self.logger.debug('RUDICS:sent full buffer m=%s n=%s len=%s buffer=%s', 
                 m, n, len(self.buffer), self.buffer)
 
         self.buffer = self.buffer[m:]
@@ -124,10 +148,13 @@ class RUDICS:
             self.logger.info('qWantOpen %s line=%s', self.qWantOpen, self.line)
             if self.qWantOpen: # Check if we should turn off?
                 self.qWantOpen = self.triggerOff.search(self.line) is None
+                if not self.qWantOpen:
+                    self.close()
             else:
                 self.qWantOpen =  self.triggerOn.search(self.line) is not None
+                if self.qWantOpen:
+                    self.open()
             self.line = bytearray()
-            self.logger.info('qWantOpen post %s', self.qWantOpen)
 
     def get(self, n:int) -> bytes:
         self.tLastAction = time.time()
@@ -152,10 +179,24 @@ class RUDICS:
         return self.s is not None
 
     def write(self, buffer:bytes) -> int:
-        return 0 if self.s is None else self.s.send(buffer)
+        try:
+            if self.s is not None:
+                return self.s.send(buffer)
+        except:
+            self.logger.exception('Exception while writing %s', buffer)
+            self.close()
+            self.qWantOpen = True
+        return 0
 
     def read(self, n:int) -> bytes:
-        return b'' if self.s is None else self.s.recv(n)
+        try:
+            if self.s is not None:
+                return self.s.recv(n)
+        except:
+            self.logger.exception('Exception while receiving %s', n)
+            self.close()
+            self.qWantOpen = True
+        return b''
 
     def close(self) -> None:
         self.qWantOpen = False # I don't want to be open
