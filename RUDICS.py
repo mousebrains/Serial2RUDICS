@@ -17,11 +17,11 @@ class RUDICS:
         self.logger = logger
         self.triggerOn = self.__mkTrigger(args.triggerOn,
                 ['behavior surface_\d+:\s+SUBSTATE \d+ ->\d+ : Picking iridium or freewave'
-                    , 'end_gps_input[(][)]'
                     , ':\s+abort_the_mission'
                     ]
                 )
                     # , 'init_gps_input[(][)]'
+                    # , 'end_gps_input[(][)]'
         self.triggerOff = self.__mkTrigger(args.triggerOff,
                 ['behavior dive_to_\d+:\s+SUBSTATE \d+ ->\d+ : diving'
                     , 'surface_\d+:\s+.*Waiting\s+for\s+final\s+GPS\s+fix'
@@ -145,7 +145,11 @@ class RUDICS:
 
         self.line += c
         if c == b'\n':
-            self.logger.info('qWantOpen %s line=%s', self.qWantOpen, self.line)
+            try:
+                msg = str(self.line, 'utf-8')
+            except:
+                msg = self.line
+            self.logger.info('qWantOpen %s line=%s', self.qWantOpen, msg.strip())
             if self.qWantOpen: # Check if we should turn off?
                 self.qWantOpen = self.triggerOff.search(self.line) is None
                 if not self.qWantOpen:
