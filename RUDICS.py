@@ -16,17 +16,19 @@ class RUDICS:
         self.args = args
         self.logger = logger
         self.triggerOn = self.__mkTrigger(args.triggerOn,
-                ['behavior surface_\d+:\s+SUBSTATE \d+ ->\d+ : Picking iridium or freewave'
-                    , ':\s+abort_the_mission'
+                [
+                    'behavior surface_\d+:\s+SUBSTATE \d+ ->\d+ : Picking iridium or freewave',
+                    ':\s+abort_the_mission',
                     ]
                 )
                     # , 'init_gps_input[(][)]'
                     # , 'end_gps_input[(][)]'
         self.triggerOff = self.__mkTrigger(args.triggerOff,
-                ['behavior dive_to_\d+:\s+SUBSTATE \d+ ->\d+ : diving'
-                    , 'surface_\d+:\s+.*Waiting\s+for\s+final\s+GPS\s+fix'
+                [
+                    'surface_\d+:\s+.*Waiting\s+for\s+final\s+GPS\s+fix',
                     ]
                 )
+                    # 'behavior dive_to_\d+:\s+SUBSTATE \d+ ->\d+ : diving',
         self.bytesPerSecond = \
                 None if (args.rudicsBaudrate is None) or (args.rudicsBaudrate < 1) \
                 else (9 / args.rudicsBaudrate) # Time to send 9 bits
@@ -148,7 +150,7 @@ class RUDICS:
             try:
                 msg = str(self.line, 'utf-8')
             except:
-                msg = self.line
+                msg = bytes(self.line)
             self.logger.info('qWantOpen %s line=%s', self.qWantOpen, msg.strip())
             if self.qWantOpen: # Check if we should turn off?
                 self.qWantOpen = self.triggerOff.search(self.line) is None
