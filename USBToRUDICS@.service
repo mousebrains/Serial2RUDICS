@@ -1,4 +1,7 @@
 #
+# Automatically generated on @DATE@
+# ARGS: @GENERATED@
+# 
 # Map a serial port to a RUDICS port on a dockserver
 #
 # sudo cp USBToRUDICS.service /etc/systemd/system/
@@ -15,19 +18,19 @@ After=dev-%i.device
 
 [Service]
 # Type=simple # Default
-User=pat
-Group=dialout
-WorkingDirectory=/home/pat/logs
+User=@USERNAME@
+Group=@GROUPNAME@
+WorkingDirectory=@DIRECTORY@
 #
-ExecStart=/home/pat/Serial2RUDICS/serial2RUDICS.py \
-	--host=gliderfmc1.ceoas.oregonstate.edu \
-	--port=6565 \
+ExecStart=@EXECUTABLE@ \
+	--host=@HOSTNAME@ \
+	--port=@PORT@ \
 	--serial=/dev/%i \
-	--baudrate=115200 \
-	--idleTimeout=3600 \
+	--baudrate=@BAUDRATE@ \
+	--idleTimeout=@TIMEOUT@ \
 	--logfile=%i.log
 
-RestartSec=60
+RestartSec=@RESTARTSECONDS@
 Restart=always
 
 [Install]
