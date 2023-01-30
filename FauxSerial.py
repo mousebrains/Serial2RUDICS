@@ -24,20 +24,19 @@ def addArgs(parser:argparse.ArgumentParser) -> None:
     grp.add_argument('--output', type=str,  default='/dev/null',
             help='File to write serial output to')
 
-def setup(args:argparse.ArgumentParser, logger:logging.Logger) -> None:
+def setup(args:argparse.ArgumentParser) -> None:
     ''' Return the serial device name to use, and start a ptty/thread if needed '''
     if args.serial is not None:
         return args.serial
-    fauxSerial = FauxSerial(args, logger)
+    fauxSerial = FauxSerial(args)
     fauxSerial.start()
     return fauxSerial.port
 
 class FauxSerial(threading.Thread):
     ''' Create a psuedo-tty and read from a file and send to the ptty and the inverse '''
-    def __init__(self, args:argparse.ArgumentParser, logger:logging.Logger) -> None:
+    def __init__(self, args:argparse.ArgumentParser) -> None:
         threading.Thread.__init__(self, daemon=True)
         self.args = args
-        self.logger = logger
         (self.master, self.slave) = pty.openpty() # Create a pseudo-tty pair
         self.port = os.ttyname(self.slave)
 
@@ -45,11 +44,10 @@ class FauxSerial(threading.Thread):
         try:
             self.runMain()
         except:
-            self.logger.exception('Exception in FauxSerial')
+            logging.exception('Exception in FauxSerial')
     
     def runMain(self) -> None:
         args = self.args
-        logger = self.logger
         master = self.master
 
         ifn = args.input
@@ -60,8 +58,8 @@ class FauxSerial(threading.Thread):
         ifp = open(ifn, 'rb')
         ofp = open(ofn, 'wb')
 
-        logger.info('FauxSerial opened %s for input', ifn)
-        logger.info('FauxSerial opened %s for output', ofn)
+        logging.info('FauxSerial opened %s for input', ifn)
+        logging.info('FauxSerial opened %s for output', ofn)
 
         maxSize = 65536 # Maximum length of internal buffers
         toSerial = bytearray() # Buffer to send to psuedo-tty
@@ -83,7 +81,7 @@ class FauxSerial(threading.Thread):
             elif not len(toFile): # Master is None and nothing left to write to file, so close ofp
                 ofp.close()
                 ofp = None
-                logger.info('FauxSerial closing output, %s, since master is None', ofn)
+                logging.info('FauxSerial closing output, %s, since master is None', ofn)
                 break
 
             if ifp is not None:
@@ -97,7 +95,7 @@ class FauxSerial(threading.Thread):
             (ifps, ofps, efps) = select.select(inputs, outputs, exceptables, dtExtra)
 
             if not ifps and not ofps and not efps: # Timeout
-                logger.info('FauxSerial shutting down due to timeout')
+                logging.info('FauxSerial shutting down due to timeout')
                 if master is not None:
                     os.close(master)
                     master = None
@@ -112,7 +110,7 @@ class FauxSerial(threading.Thread):
             for fp in efps:
                 os.close(fp) # Close the master on exception
                 master = None
-                logger.info('FauxSerial Closing master PTY, %s', fp)
+                logging.info('FauxSerial Closing master PTY, %s', fp)
 
             for fp in ifps:
                 if isinstance(fp, int): # read from master
@@ -122,7 +120,7 @@ class FauxSerial(threading.Thread):
                     if c == b'': # EOF
                         ifp.close()
                         ifp = None
-                        logger.info('FauxSerial Closed %s', ifn)
+                        logging.info('FauxSerial Closed %s', ifn)
                     else:
                         toSerial += c
 
@@ -135,4 +133,4 @@ class FauxSerial(threading.Thread):
                     fp.flush()
                     toFile = toFile[n:]
 
-        logger.info('FauxSerial Fell out of while loop')
+        logging.info('FauxSerial Fell out of while loop')

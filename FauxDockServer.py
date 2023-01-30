@@ -27,12 +27,12 @@ def addArgs(parser:argparse.ArgumentParser) -> None:
     grp.add_argument('--dsOutput', type=str, default='/dev/null',
             help='When --simDS is specified, where should simulated dockserver output go')
 
-def setup(args:argparse.ArgumentParser, logger:logging.Logger) -> argparse.ArgumentParser:
+def setup(args:argparse.ArgumentParser) -> argparse.ArgumentParser:
     ''' Return the serial device name to use, and start a ptty/thread if needed '''
 
     if args.host is not None:
         return args
-    fauxDS = FauxDS(args, logger)
+    fauxDS = FauxDS(args)
     fauxDS.start()
     args.host = fauxDS.host
     args.port = fauxDS.port
@@ -40,34 +40,31 @@ def setup(args:argparse.ArgumentParser, logger:logging.Logger) -> argparse.Argum
 
 class FauxDS(threading.Thread):
     ''' Create a port and listen on it for an incoming connection '''
-    def __init__(self, args:argparse.ArgumentParser, logger:logging.Logger) -> None:
+    def __init__(self, args:argparse.ArgumentParser) -> None:
         threading.Thread.__init__(self, daemon=True)
         self.args = args
-        self.logger = logger
         self.host = '127.0.0.1' # localhost ip address
         self.port = random.randrange(60000, 65536) # Port to listen on
 
     def run(self) -> None: # Called on start
         args = self.args
-        logger = self.logger
 
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.bind((self.host, self.port))
                 s.listen(1) # Reject after first connection
-                logger.info('FauxDS listening at %s:%s', self.host, self.port)
+                logging.info('FauxDS listening at %s:%s', self.host, self.port)
                 (conn, addr) = s.accept()
 
-                logger.info('FauxDS connection from %s', addr)
+                logging.info('FauxDS connection from %s', addr)
                 
                 with conn:
                     self.doit(conn)
         except:
-            logger.exception('FauxDS')
+            logging.exception('FauxDS')
 
     def doit(self, conn) -> None:
         args = self.args
-        logger = self.logger
 
         ifn = args.dsInput
         ofn = args.dsOutput
@@ -75,8 +72,8 @@ class FauxDS(threading.Thread):
         ifp = None if ifn is None else open(ifn, 'rb')
         ofp = open(ofn, 'wb')
 
-        logger.info('FauxDS opened %s for input', args.dsInput)
-        logger.info('FauxDS opened %s for output', args.dsOutput)
+        logging.info('FauxDS opened %s for input', args.dsInput)
+        logging.info('FauxDS opened %s for output', args.dsOutput)
 
         toSocket = bytearray()
         toFile = bytearray()
@@ -104,7 +101,7 @@ class FauxDS(threading.Thread):
                     if c == b'': # EOF
                         ifp.close()
                         ifp = None
-                        logger.info('FauxDS closed %s', ifn)
+                        logging.info('FauxDS closed %s', ifn)
                     else:
                         toSocket += c
                 else:
@@ -112,7 +109,7 @@ class FauxDS(threading.Thread):
                     if c == b'': # EOF
                         conn.close()
                         conn = None
-                        logger.info('FauxDS closed connection')
+                        logging.info('FauxDS closed connection')
                     else:
                         toFile += c
 
@@ -127,4 +124,4 @@ class FauxDS(threading.Thread):
 
         if ofp is not None:
             ofp.close()
-            logger.info('FauxDS closed %s', ofn)
+            logging.info('FauxDS closed %s', ofn)
