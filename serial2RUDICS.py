@@ -69,14 +69,14 @@ def doit(serial:RealSerial, rudics:RUDICS, binary:str=None) -> None:
                 c = serial.get(n) # Read a character
                 if len(c): 
                     rudics.put(c)
-                    ofp.write(bytes(f"SERIAL {len(c)} : ", "UTF-8") + c + b'\n')
+                    if ofp: ofp.write(bytes(f"SERIAL {len(c)} : ", "UTF-8") + c + b'\n')
                 else: # EOF
                     serial.close()
             else: # RUDICS
                 c = rudics.get(1024 * 1024) # Read what is available up to 1MB
                 if len(c):
                     serial.put(c)
-                    ofp.write(bytes(f"RUDICS {len(c)} : ", "UTF-8") + c + b'\n')
+                    if ofp: ofp.write(bytes(f"RUDICS {len(c)} : ", "UTF-8") + c + b'\n')
                 else: # EOF
                     rudics.close()
 
