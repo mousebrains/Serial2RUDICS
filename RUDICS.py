@@ -12,9 +12,8 @@ import socket
 from RealSerial import baudrates
 
 class RUDICS:
-    def __init__(self, args:argparse.ArgumentParser, logger:logging.Logger) -> None:
+    def __init__(self, args:argparse.ArgumentParser) -> None:
         self.args = args
-        self.logger = logger
         self.triggerOn = self.__mkTrigger(args.triggerOn,
                 [
                     'behavior surface_\d+:\s+SUBSTATE \d+ ->\d+ : Picking iridium or freewave',
@@ -70,7 +69,7 @@ class RUDICS:
                 help='Should the initial state be disconnected?')
 
     def __del__(self) -> None: # Destructor
-        self.logger.info('Destroying RUDICS')
+        logging.info('Destroying RUDICS')
         self.close()
 
     def __bool__(self) -> bool:
@@ -107,12 +106,12 @@ class RUDICS:
         now = time.time()
         dt = now - self.tLastOpen # Time since last 
         if dt >= self.args.idleTimeout:
-            self.logger.info('Idle timeout')
+            logging.info('Idle timeout')
             self.close()
             self.tLastAction = now
 
     def send(self) -> None:
-        self.logger.debug('RUDICS:send')
+        logging.debug('RUDICS:send %s', len(self.buffer))
         now = time.time()
 
         if (self.s is None) or (not len(self.buffer)) or (self.tNextSend >= now):
@@ -132,7 +131,7 @@ class RUDICS:
         else:
             m = self.write(self.buffer[0:n])
 
-        self.logger.debug('RUDICS:sent full buffer m=%s n=%s len=%s buffer=%s', 
+        logging.debug('RUDICS:sent full buffer m=%s n=%s len=%s buffer=%s', 
                 m, n, len(self.buffer), self.buffer)
 
         self.buffer = self.buffer[m:]
@@ -146,28 +145,32 @@ class RUDICS:
             self.buffer += c
 
         self.line += c
-        if c == b'\n':
+        if not self.line.find(b'\n') >= 0: return # No full lines in self.line
+        for line in self.line.split(b"\n"):
+            if not line: continue # Empty buffer, probably the last one
+            if line[-1:] != b'\r': 
+                self.line = line
+                return
             try:
-                msg = str(self.line, 'utf-8')
+                msg = str(line, "utf-8")
             except:
-                msg = bytes(self.line)
-            self.logger.info('qWantOpen %s line=%s', self.qWantOpen, msg.strip())
+                msg = bytes(line)
+
+            logging.info('qWantOpen %s line=%s', self.qWantOpen, msg.strip())
             if self.qWantOpen: # Check if we should turn off?
                 self.qWantOpen = self.triggerOff.search(self.line) is None
-                if not self.qWantOpen:
-                    self.close()
+                if not self.qWantOpen: self.close()
             else:
                 self.qWantOpen =  self.triggerOn.search(self.line) is not None
-                if self.qWantOpen:
-                    self.open()
-            self.line = bytearray()
+                if self.qWantOpen: self.open()
+        self.line = bytearray()
 
     def get(self, n:int) -> bytes:
         self.tLastAction = time.time()
         c = self.read(n)
         if not len(c): # Connection dropped
             self.close()
-        self.logger.info('get n=%s c=%s', n, c)
+        logging.info('get n=%s c=%s', n, c)
         return c
 
     def inputFileno(self) -> int:
@@ -189,7 +192,7 @@ class RUDICS:
             if self.s is not None:
                 return self.s.send(buffer)
         except:
-            self.logger.exception('Exception while writing %s', buffer)
+            logging.exception('Exception while writing %s', buffer)
             self.close()
             self.qWantOpen = True
         return 0
@@ -199,7 +202,7 @@ class RUDICS:
             if self.s is not None:
                 return self.s.recv(n)
         except:
-            self.logger.exception('Exception while receiving %s', n)
+            logging.exception('Exception while receiving %s', n)
             self.close()
             self.qWantOpen = True
         return b''
@@ -209,14 +212,12 @@ class RUDICS:
         if self.s is None:
             return
 
-        logger = self.logger
-
         try: # Shutdown seems to hold the connection open????
             # s.shutdown(socket.SHUT_RDWR) # Shutdown the connection
             self.s.close() # Free up resources
-            logger.info('Closed %s:%s', self.args.host, self.args.port)
+            logging.info('Closed %s:%s', self.args.host, self.args.port)
         except:
-            logger.exception('Error closing %s:%s', self.args.host, self.args.port)
+            logging.exception('Error closing %s:%s', self.args.host, self.args.port)
 
         self.s = None
         now = time.time()
@@ -232,17 +233,16 @@ class RUDICS:
             return
 
         args = self.args
-        logger = self.logger
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(None) # Non-blocking
             s.connect((args.host, args.port)) # Connect to RUDICS listener on a Dockserver
-            logger.info('Connected to %s:%s', args.host, args.port)
+            logging.info('Connected to %s:%s', args.host, args.port)
             self.s = s
             self.tLastOpen = time.time()
             self.qWantOpen = True # I'm now open
         except:
             self.tNextOpen = time.time() + args.rudicsDelay
             self.qWantOpen = True # We want to be open
-            logger.exception('Unexpected error connecting to %s:%s, wait %s seconds to retry',
+            logging.exception('Unexpected error connecting to %s:%s, wait %s seconds to retry',
                     args.host, args.port, args.rudicsDelay)
