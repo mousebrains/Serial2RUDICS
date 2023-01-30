@@ -19,7 +19,8 @@ from RealSerial import RealSerial
 from RUDICS import RUDICS
 import time
 
-def doit(serial:RealSerial, rudics:RUDICS, logger:logging.Logger) -> None:
+def doit(serial:RealSerial, rudics:RUDICS, binary:str=None) -> None:
+    ofp = open(binary, "wb") if binary else None
 
     while bool(serial) or bool(rudics): # While an open serial port or stuff to send to RUDICS
         ifpSerial = serial.inputFileno()
@@ -36,7 +37,7 @@ def doit(serial:RealSerial, rudics:RUDICS, logger:logging.Logger) -> None:
         if ofpRUDICS is not None: ofps.append(ofpRUDICS)
 
         timeout = rudics.timeout()
-        # logger.info('timeout=%s ifps=%s ofps=%s s %s r %s', 
+        # logging.info('timeout=%s ifps=%s ofps=%s s %s r %s', 
                 # timeout, len(ifps), len(ofps), len(serial.buffer), len(rudics.buffer))
         [readable, writeable, exceptable] = select.select(ifps, ofps, ifps, timeout)
 
@@ -45,12 +46,12 @@ def doit(serial:RealSerial, rudics:RUDICS, logger:logging.Logger) -> None:
             continue
 
         for fp in exceptable: # Handle exceptions first
-            # logger.info('exceptable fp=%s', fp)
+            # logging.info('exceptable fp=%s', fp)
             if fp == ifpSerial:
-                logger.warning('Select exception for serial connection')
+                logging.warning('Select exception for serial connection')
                 serial.close() # Exception on the serial side
             else: # exception on the RUDICS side
-                logger.warning('Select exception for RUDICS connection')
+                logging.warning('Select exception for RUDICS connection')
                 rudics.close()
 
         if exceptable: continue # Skip reading/writing this time if there are exceptions
@@ -64,17 +65,22 @@ def doit(serial:RealSerial, rudics:RUDICS, logger:logging.Logger) -> None:
 
         for fp in readable:
             if fp == ifpSerial:
-                c = serial.get(1) # Read a character
+                n = serial.nAvailable() # How many characters are available
+                c = serial.get(n) # Read a character
                 if len(c): 
                     rudics.put(c)
+                    ofp.write(bytes(f"SERIAL {len(c)} : ", "UTF-8") + c + b'\n')
                 else: # EOF
                     serial.close()
             else: # RUDICS
-                c = rudics.get(8192) # Read what is available up to 8192 bytes
+                c = rudics.get(1024 * 1024) # Read what is available up to 1MB
                 if len(c):
                     serial.put(c)
+                    ofp.write(bytes(f"RUDICS {len(c)} : ", "UTF-8") + c + b'\n')
                 else: # EOF
                     rudics.close()
+
+    if ofp: ofp.close()
 
 parser = argparse.ArgumentParser(description="Simulate a RUIDCS connection for a Slocum simulator")
 MyLogger.addArgs(parser)
@@ -82,25 +88,25 @@ FauxSerial.addArgs(parser)
 RealSerial.addArgs(parser)
 FauxDockServer.addArgs(parser)
 RUDICS.addArgs(parser)
-
+parser.add_argument("--binary", type=str, help="Binary output filename")
 args = parser.parse_args()
 
-logger = MyLogger.mkLogger(args)
-logger.info('args=%s', args)
+MyLogger.mkLogger(args)
+logging.info('args=%s', args)
 
 tty = None
 rudics = None
 
 try:
-    args.serial = FauxSerial.setup(args, logger)
-    args = FauxDockServer.setup(args, logger)
-    tty = RealSerial(args, logger) # Serial input/output
-    rudics = RUDICS(args, logger)
-    doit(tty, rudics, logger)
+    args.serial = FauxSerial.setup(args)
+    args = FauxDockServer.setup(args)
+    tty = RealSerial(args) # Serial input/output
+    rudics = RUDICS(args)
+    doit(tty, rudics, args.binary)
 except:
-    logger.exception('Unexpected exception')
+    logging.exception('Unexpected exception')
 finally:
-    logger.info('Fell into finally')
+    logging.info('Fell into finally')
     if tty is not None: 
         tty.close()
     if rudics is not None:
