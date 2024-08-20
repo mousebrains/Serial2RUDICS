@@ -26,6 +26,7 @@ parser = ArgumentParser()
 parser.add_argument("service", type=str, nargs="*", help="Service file(s) to copy")
 parser.add_argument("--serviceDirectory", type=str, default="/etc/systemd/system",
         help="Where to copy service file to")
+parser.add_argument("--device", type=str, action="append", help="Explicit devices to enable, ttyUSB0...")
 grp = parser.add_argument_group(description="Service file translation related options")
 grp.add_argument("--hostname", type=str, default="gliderfmc1.ceoas.oregonstate.edu",
         help="Remote hostname")
@@ -50,6 +51,9 @@ parser.add_argument("--sudo", type=str, default="/usr/bin/sudo", help="sudo exec
 args = parser.parse_args()
 
 if not args.service: args.service.append("USBToRUDICS@.service")
+
+if not args.device:
+    args.device = list(map(lambda x: "ttyUSB" + str(x), range(10)))
 
 if args.username is None: args.username = os.getlogin()
 
@@ -113,8 +117,16 @@ if qDidSomething:
     subprocess.run((args.sudo, args.systemctl, "daemon-reload"), shell=False, check=True)
  
     services = " ".join(args.service)
-    print(f"Enabling {services}")
-    subprocess.run((args.sudo, args.systemctl, "enable", services), shell=False, check=True)
+
+    if args.device:
+        devices = []
+        for service in args.service:
+            for device in args.device:
+                devices.append(re.sub("@", "@" + device, service, count=1))
+        cmd = [args.sudo, args.systemctl, "enable"]
+        cmd.extend(devices)
+        print(f"Enabling", " ".join(devices))
+        subprocess.run(cmd, shell=False, check=True)
 
     # print(f"Starting {services}")
     # subprocess.run((args.sudo, args.systemctl, "restart", services), shell=False, check=True)
