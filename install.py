@@ -83,21 +83,21 @@ for service in args.service: # Walk through services to copy over
 
     with open(service, "r") as fp:
         content = fp.read() # Load the new service
-    content = re.sub(r"@DATE@", "Generated on " + time.asctime(), content)
-    content = re.sub(r"@GENERATED@", str(args), content)
-    content = re.sub(r"@USERNAME@", args.username, content)
-    content = re.sub(r"@GROUPNAME@", args.group, content)
-    content = re.sub(r"@DIRECTORY@", args.directory, content)
-    content = re.sub(r"@EXECUTABLE@", os.path.join(root, args.executable), content)
-    content = re.sub(r"@HOSTNAME@", args.hostname, content)
-    content = re.sub(r"@PORT@", str(args.port), content)
-    content = re.sub(r"@BAUDRATE@", str(args.baudrate), content)
-    content = re.sub(r"@TIMEOUT@", str(args.timeout), content)
-    content = re.sub(r"@RESTARTSECONDS@", str(args.restartSeconds), content)
+    content = content.replace("@DATE@", "Generated on " + time.asctime())
+    content = content.replace("@GENERATED@", str(args))
+    content = content.replace("@USERNAME@", args.username)
+    content = content.replace("@GROUPNAME@", args.group)
+    content = content.replace("@DIRECTORY@", args.directory)
+    content = content.replace("@EXECUTABLE@", os.path.join(root, args.executable))
+    content = content.replace("@HOSTNAME@", args.hostname)
+    content = content.replace("@PORT@", str(args.port))
+    content = content.replace("@BAUDRATE@", str(args.baudrate))
+    content = content.replace("@TIMEOUT@", str(args.timeout))
+    content = content.replace("@RESTARTSECONDS@", str(args.restartSeconds))
 
     if not args.force and os.path.exists(target):
         try:
-            with open (target, "r") as fp:
+            with open(target, "r") as fp:
                 current = barebones(fp.read()) # Current contents
                 proposed = barebones(content) # What we want to write
                 if current == proposed:

@@ -45,15 +45,12 @@ def doit(serial: RealSerial, rudics: RUDICS, binary: str | None = None) -> None:
                 ofps.append(ofpRUDICS)
 
             timeout = rudics.timeout()
-            # logging.info('timeout=%s ifps=%s ofps=%s s %s r %s',
-                    # timeout, len(ifps), len(ofps), len(serial.buffer), len(rudics.buffer))
             [readable, writeable, exceptable] = select.select(ifps, ofps, ifps, timeout)
 
             if not readable and not writeable and not exceptable: # Timeout
                 continue
 
             for fp in exceptable: # Handle exceptions first
-                # logging.info('exceptable fp=%s', fp)
                 if fp == ifpSerial:
                     logging.warning('Select exception for serial connection')
                     serial.close() # Exception on the serial side

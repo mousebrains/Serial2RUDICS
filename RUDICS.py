@@ -163,7 +163,7 @@ class RUDICS:
             m = self.write(self.buffer[0:n])
 
         logging.debug('RUDICS:sent full buffer m=%s n=%s len=%s buffer=%s',
-                m, n, len(self.buffer), self.buffer)
+                m, n, len(self.buffer), bytes(self.buffer[:200]))
 
         self.buffer = self.buffer[m:]
 
@@ -217,7 +217,7 @@ class RUDICS:
         if not len(c) and self.s is not None: # Connection dropped, not already handled by read()
             self.close()
             self.qWantOpen = True # Want to reconnect
-        logging.info('get n=%s c=%s', n, c)
+        logging.info('get n=%s len=%s', n, len(c))
         return c
 
     def inputFileno(self) -> socket.socket | None:
@@ -235,7 +235,7 @@ class RUDICS:
             if self.s is not None:
                 return self.s.send(buffer)
         except Exception:
-            logging.exception('Exception while writing %s', buffer)
+            logging.exception('Exception while writing %d bytes', len(buffer))
             self.close()
             self.qWantOpen = True
         return 0
