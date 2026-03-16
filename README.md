@@ -1,31 +1,48 @@
 # Serial2RUDICS
 For TWR Slocum gliders which is connected via a serial port, change to connecting via a RUDICS listener on the dockserver
 
-I run this as a service on our SFMC/dockserver server for two serial ports. See comments in USB2ToRUDICS.service for how to install the service on a CentOS 7 system.
+I run this as a service on a Raspberry Pi 3B running Raspberry Pi OS (Debian Trixie) for multiple serial ports. See `USBToRUDICS@.service` for the service template and `install.py` for automated installation.
 
-We have a pocket and shoebox simulators connected to the serial ports.
+We connect pocket simulators, shoebox simulators, and Slocum gliders to the serial ports.
 
 All the output of the simulators is logged.
 
-I run this program on a backup SFMC server, where one needs to modify 
-/var/opt/sfmc-dockserver/dockServerState.xml.
-To deallocate a port from SFMC so this program can use it, you will need to edit 
-/var/opt/sfmc-dockserver/dockServerState.xml. 
-Comment out the port line for the port you want to use and the gliderLink line for that port. Then restart the dockserver from within SFMC.
+Initially all output is sent to the dockserver via a RUDICS style connection. The RUDICS connection is dropped after the first dive. Then reestablished upon surfacing. 
+The pocket/shoebox/glider is now only connected while on the surface, similar to a real glider.
 
-Initially all output is sent to the dockserver via a RUDICS style connection. The RUDICS connection is dropped after the first dive. Then reestablished upon surfacing. A pocket/shoebox simulator now is only connected while on the surface, simalar to a real glider.
+## Dependencies
 
-Usage:
+- Python 3.13+
+- [pyserial](https://pypi.org/project/pyserial/) (`pip install pyserial` or `pip install -r requirements.txt`)
 
-serial2RUDICS --host=localhost --serial=/dev/ttyUSB0
+## Installation
+
+1. Add your user to the `dialout` group (for serial port access):
+   ```
+   sudo usermod -aG dialout $USER
+   ```
+
+2. Install the systemd service template and create the log directory:
+   ```
+   python3 install.py --hostname <dockserver> --port 6565
+   ```
+
+3. Install the udev rule to auto-start on USB-serial plug-in:
+   ```
+   sudo cp 99-ttyusb.rules /etc/udev/rules.d/
+   sudo udevadm control --reload
+   ```
+
+## Usage
+
+serial2RUDICS.py --host=localhost --port=6565 --serial=/dev/ttyUSB0
 
 To see all the command line options use:
 
-serial2RUDICS --help
+serial2RUDICS.py --help
 
+## Notes
 
-# Notes:
-
-This is a Python 3 program. It has been tested on a Mac running Python 3.7.3 and on CentOS running Pythoon 3.6.8.
+This is a Python 3 program. It has been tested on Raspberry Pi OS (Debian Trixie) running Python 3.13.
 
 The only non-standard Python module you might have to install is pyserial.

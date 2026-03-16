@@ -6,18 +6,19 @@
 import argparse
 import logging
 import serial
-import logging
 
 baudrates = serial.Serial.BAUDRATES
 
 class RealSerial:
-    def __init__(self, args:argparse.ArgumentParser) -> None:
+    def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.buffer = bytearray()
+        self.port: str = args.serial
+        self.fp: serial.Serial | None = None
         self.__open()
 
     @staticmethod
-    def addArgs(parser:argparse.ArgumentParser) -> None:
+    def addArgs(parser: argparse.ArgumentParser) -> None:
         grp = parser.add_argument_group('Real Serial Port Options')
         grp.add_argument('--baudrate', type=int, choices=baudrates, default=115200,
                 help='Serial port baudrate')
@@ -29,34 +30,34 @@ class RealSerial:
                 default=1, help='Number of stop bits')
 
     def __del__(self) -> None: # Destructor
-        logging.info('Destroying Serial %s', self.port)
-        self.close()
+        try:
+            logging.info('Destroying Serial %s', getattr(self, 'port', '?'))
+            self.close()
+        except Exception:
+            pass
 
     def __bool__(self) -> bool:
         return (self.fp is not None) or bool(len(self.buffer))
 
-    def inputFileno(self) -> serial.Serial: 
+    def inputFileno(self) -> serial.Serial | None:
         return self.fp
 
-    def outputFileno(self) -> serial.Serial: 
+    def outputFileno(self) -> serial.Serial | None:
         return self.fp if len(self.buffer) else None
-
-    def exceptionFileno(self) -> serial.Serial:
-        return self.fp
 
     def send(self) -> None:
         if (self.fp is not None) and len(self.buffer):
             n = self.fp.write(self.buffer[0:1]) # 1 at a time to not overload
             self.buffer = self.buffer[n:]
 
-    def put(self, c:bytes) -> None:
+    def put(self, c: bytes) -> None:
         self.buffer += c
 
     def nAvailable(self) -> int:
         return self.fp.in_waiting if self.fp else 0
 
-    def get(self, n:int) -> bytes:
-        if self.fp is None:
+    def get(self, n: int) -> bytes:
+        if self.fp is None or n <= 0:
             return b''
         try:
             c = self.fp.read(n)
@@ -65,7 +66,7 @@ class RealSerial:
             return c
         except serial.serialutil.SerialException as e:
             logging.error('Unexpected exception while reading serial port, %s', str(e))
-        except:
+        except Exception:
             logging.exception('Unexpected exception while reading serial port')
 
         self.close()
@@ -73,10 +74,8 @@ class RealSerial:
 
     def __open(self) -> None:
         args = self.args
-        self.port = args.serial
-        self.fp = None
         try:
-            fp = serial.Serial(port=self.port, baudrate=args.baudrate, 
+            fp = serial.Serial(port=self.port, baudrate=args.baudrate,
                     bytesize=args.bytesize, parity=args.parity, stopbits=args.stopbits)
             self.fp = fp
             logging.info('Opened serial port %s parity=%s baudrate=%s bytesize=%s stopbits=%s',
@@ -86,11 +85,11 @@ class RealSerial:
             logging.exception('Error opening serial port %s', self.port)
         except ValueError:
             logging.exception('Value error opening serial port %s', self.port)
-        except:
+        except Exception:
             logging.exception('Unexpected error opening serial port %s', self.port)
 
     def close(self) -> None:
-        if self.fp is None: 
+        if self.fp is None:
             return
 
         try:
@@ -98,6 +97,6 @@ class RealSerial:
             logging.info('Closed %s', self.port)
         except serial.serialutil.SerialException:
             logging.exception('Error closing serial port %s', self.port)
-        except:
+        except Exception:
             logging.exception('Unexpected error closing serial port %s', self.port)
         self.fp = None

@@ -1,4 +1,10 @@
 __pycache__
+*.pyc
+*.pyo
 *~
 .*~
 logs
+*.log
+.env
+.venv/
+venv/

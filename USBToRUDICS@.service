@@ -1,13 +1,13 @@
 #
 # Automatically generated on @DATE@
 # ARGS: @GENERATED@
-# 
+#
 # Map a serial port to a RUDICS port on a dockserver
 #
-# sudo cp USBToRUDICS.service /etc/systemd/system/
+# sudo cp USBToRUDICS@.service /etc/systemd/system/
 #
 # sudo systemctl daemon-reload
-# sudo systemctl enable USBToRUDICS.service
+# sudo systemctl enable USBToRUDICS@ttyUSB0.service
 #
 # Feb-2020, Pat Welch, pat@mousebrains.com
 
@@ -21,7 +21,9 @@ After=dev-%i.device
 User=@USERNAME@
 Group=@GROUPNAME@
 WorkingDirectory=@DIRECTORY@
+SyslogIdentifier=USBToRUDICS-%i
 #
+ExecStartPre=/bin/mkdir -p @DIRECTORY@
 ExecStart=@EXECUTABLE@ \
 	--host=@HOSTNAME@ \
 	--port=@PORT@ \
@@ -30,9 +32,17 @@ ExecStart=@EXECUTABLE@ \
 	--idleTimeout=@TIMEOUT@ \
 	--logfile=%i.log
 
+TimeoutStopSec=30
 RestartSec=@RESTARTSECONDS@
 Restart=always
 
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+PrivateTmp=true
+
 [Install]
 WantedBy=multi-user.target
-

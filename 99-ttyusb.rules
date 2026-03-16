@@ -1,5 +1,5 @@
 #
-# This file should be installed in 
+# This file should be installed in
 #
 # /etc/udev/rules.d
 #
@@ -10,5 +10,5 @@
 # Be sure USBToRUDICS@.service is installed too!
 #
 # Feb-2020, Pat Welch
-# 
-KERNEL=="ttyUSB[0-9]", ENV{SYSTEMD_WANTS}="USBToRUDICS@ttyUSB%n.service"
+#
+KERNEL=="ttyUSB[0-9]*", GROUP="dialout", MODE="0660", ENV{SYSTEMD_WANTS}="USBToRUDICS@ttyUSB%n.service"

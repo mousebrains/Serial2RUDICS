@@ -5,20 +5,19 @@
 # Jan-2023, Pat Welch, pat@mousebrains.com
 
 from argparse import ArgumentParser
+import getpass
 import subprocess
 from tempfile import NamedTemporaryFile
-import yaml
-import socket
 import os
 import re
 import time
-import sys
 
-def barebones(content:str) -> list[str]:
+def barebones(content: str) -> list[str]:
     lines = []
     for line in content.split("\n"):
         line = line.strip()
-        if (len(line) == 0) or (line[0] == "#"): continue
+        if (len(line) == 0) or (line[0] == "#"):
+            continue
         lines.append(line)
     return lines
 
@@ -50,51 +49,61 @@ parser.add_argument("--chmod", type=str, default="/bin/chmod", help="chmod execu
 parser.add_argument("--sudo", type=str, default="/usr/bin/sudo", help="sudo executable")
 args = parser.parse_args()
 
-if not args.service: args.service.append("USBToRUDICS@.service")
+if not args.service:
+    args.service.append("USBToRUDICS@.service")
 
 if not args.device:
     args.device = list(map(lambda x: "ttyUSB" + str(x), range(10)))
 
-if args.username is None: args.username = os.getlogin()
+if args.username is None:
+    args.username = getpass.getuser()
 
-if args.directory is None: args.directory = "~/logs" # working directory to move to
+if args.directory is None:
+    args.directory = "~/logs" # working directory to move to
 
 args.directory = os.path.abspath(os.path.expanduser(args.directory))
 args.serviceDirectory = os.path.abspath(os.path.expanduser(args.serviceDirectory))
 
 root = os.path.dirname(os.path.abspath(__file__)) # Where the script is at
 
+if not os.path.isdir(args.directory):
+    print("Creating working directory", args.directory)
+    os.makedirs(args.directory, exist_ok=True)
+
 qDidSomething = False
 
 for service in args.service: # Walk through services to copy over
     target = os.path.join(args.serviceDirectory, service)
+    if not os.path.isabs(service):
+        service = os.path.join(root, service)
     service = os.path.abspath(os.path.expanduser(service))
     if not os.path.isfile(service):
         print(f"ERROR {service} does not exist")
         continue
 
-    with open(service, "r") as fp: input = fp.read() # Load the new service
-    input = re.sub(r"@DATE@", "Generated on " + time.asctime(), input)
-    input = re.sub(r"@GENERATED@", str(args), input)
-    input = re.sub(r"@USERNAME@", args.username, input)
-    input = re.sub(r"@GROUPNAME@", args.group, input)
-    input = re.sub(r"@DIRECTORY@", args.directory, input)
-    input = re.sub(r"@EXECUTABLE@", os.path.join(root, args.executable), input)
-    input = re.sub(r"@HOSTNAME@", args.hostname, input)
-    input = re.sub(r"@PORT@", str(args.port), input)
-    input = re.sub(r"@BAUDRATE@", str(args.baudrate), input)
-    input = re.sub(r"@TIMEOUT@", str(args.timeout), input)
-    input = re.sub(r"@RESTARTSECONDS@", str(args.restartSeconds), input)
+    with open(service, "r") as fp:
+        content = fp.read() # Load the new service
+    content = re.sub(r"@DATE@", "Generated on " + time.asctime(), content)
+    content = re.sub(r"@GENERATED@", str(args), content)
+    content = re.sub(r"@USERNAME@", args.username, content)
+    content = re.sub(r"@GROUPNAME@", args.group, content)
+    content = re.sub(r"@DIRECTORY@", args.directory, content)
+    content = re.sub(r"@EXECUTABLE@", os.path.join(root, args.executable), content)
+    content = re.sub(r"@HOSTNAME@", args.hostname, content)
+    content = re.sub(r"@PORT@", str(args.port), content)
+    content = re.sub(r"@BAUDRATE@", str(args.baudrate), content)
+    content = re.sub(r"@TIMEOUT@", str(args.timeout), content)
+    content = re.sub(r"@RESTARTSECONDS@", str(args.restartSeconds), content)
 
     if not args.force and os.path.exists(target):
         try:
             with open (target, "r") as fp:
                 current = barebones(fp.read()) # Current contents
-                proposed = barebones(input) # What we want to write
+                proposed = barebones(content) # What we want to write
                 if current == proposed:
                     print("No need to update, identical")
                     continue
-        except:
+        except Exception:
             pass
 
     if not os.path.isdir(os.path.dirname(target)):
@@ -103,20 +112,18 @@ for service in args.service: # Walk through services to copy over
         subprocess.run((args.sudo, args.mkdir, "-p", wd), shell=False, check=True)
 
     # Write to a temporary file, then copy as root via sudo
-    with NamedTemporaryFile(mode="w") as fp:
-        fp.write(input)
-        fp.flush()
+    with NamedTemporaryFile(mode="w") as tfp:
+        tfp.write(content)
+        tfp.flush()
         print("Writing to", target)
-        subprocess.run((args.sudo, args.cp, fp.name, target), shell=False, check=True)
-        subprocess.run((args.sudo, args.chmod, "0644", target))
+        subprocess.run((args.sudo, args.cp, tfp.name, target), shell=False, check=True)
+        subprocess.run((args.sudo, args.chmod, "0644", target), shell=False, check=True)
 
     qDidSomething = True
 
 if qDidSomething:
     print("Forcing reload of daemon")
     subprocess.run((args.sudo, args.systemctl, "daemon-reload"), shell=False, check=True)
- 
-    services = " ".join(args.service)
 
     if args.device:
         devices = []
@@ -125,12 +132,6 @@ if qDidSomething:
                 devices.append(re.sub("@", "@" + device, service, count=1))
         cmd = [args.sudo, args.systemctl, "enable"]
         cmd.extend(devices)
-        print(f"Enabling", " ".join(devices))
+        print("Enabling", " ".join(devices))
         subprocess.run(cmd, shell=False, check=True)
 
-    # print(f"Starting {services}")
-    # subprocess.run((args.sudo, args.systemctl, "restart", services), shell=False, check=True)
-
-    # print(f"Status {services}")
-    # s = subprocess.run((args.sudo, args.systemctl, "--no-pager", "status", services),
-            # shell=False, check=True)
