@@ -19,7 +19,7 @@ class RUDICS:
         self.args = args
         self.triggerOn = self.__mkTrigger(args.triggerOn,
                 [
-                    r'behavior surface_\d+:\s+SUBSTATE \d+ ->\d+ : Picking iridium or freewave',
+                    r'surface_\d+:.*Picking iridium or freewave',
                     r':\s+abort_the_mission',
                     ]
                 )
@@ -27,7 +27,8 @@ class RUDICS:
                     # , r'end_gps_input[(][)]'
         self.triggerOff = self.__mkTrigger(args.triggerOff,
                 [
-                    r'surface_\d+:\s+.*Waiting\s+for\s+final\s+GPS\s+fix',
+                    r'surface_\d+:.*Waiting\s+for\s+final\s+gps\s+fix',
+                    r'surface_\d+:.*STATE\s+Active\s*->',
                     ]
                 )
                     # r'behavior dive_to_\d+:\s+SUBSTATE \d+ ->\d+ : diving',
@@ -195,12 +196,14 @@ class RUDICS:
                 logging.info('qWantOpen %s line=%s', self.qWantOpen, msg.strip())
                 if self.qWantOpen: # Check if we should turn off?
                     if self.triggerOff.search(line) is not None:
+                        logging.info('triggerOff matched: %s', msg.strip())
                         self.qWantOpen = False
                         self.close()
                         self.buffer = bytearray()
                         wasOpen = False
                 else:
                     if self.triggerOn.search(line) is not None:
+                        logging.info('triggerOn matched: %s', msg.strip())
                         self.qWantOpen = True
                         self.open()
 
