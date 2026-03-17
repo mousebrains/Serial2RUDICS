@@ -30,7 +30,8 @@ def setup(args: argparse.Namespace) -> str:
     ''' Return the serial device name to use, and start a ptty/thread if needed '''
     global fauxSerial
     if args.serial is not None:
-        return args.serial
+        serial_port: str = args.serial
+        return serial_port
     fauxSerial = FauxSerial(args)
     fauxSerial.start()
     return fauxSerial.port
@@ -81,9 +82,9 @@ class FauxSerial(threading.Thread):
                     exceptables.append(master)
                     if len(toFile) < maxSize:
                         inputs.append(master)
-                    if len(toSerial) > 0:
+                    if toSerial:
                         outputs.append(master)
-                elif not len(toFile): # Master is None and nothing left to write to file, so close ofp
+                elif not toFile: # Master is None and nothing left to write to file, so close ofp
                     if ofp is not None:
                         ofp.close()
                     ofp = None
@@ -93,10 +94,10 @@ class FauxSerial(threading.Thread):
                 if ifp is not None:
                     if len(toSerial) < maxSize:
                         inputs.append(ifp)
-                elif qMagic and not len(toSerial): # Nothing left to send to master
+                elif qMagic and not toSerial: # Nothing left to send to master
                     dtExtra = 10 # Wait 10 seconds for additional input from master
 
-                if (ofp is not None) and (len(toFile) > 0):
+                if (ofp is not None) and toFile:
                     outputs.append(ofp)
 
                 (ifps, ofps, efps) = select.select(inputs, outputs, exceptables, dtExtra)

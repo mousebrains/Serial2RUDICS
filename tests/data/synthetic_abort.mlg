@@ -1,0 +1,11 @@
+the8x3_filename
+full_filename
+LOG FILE OPENED
+
+surface_0:2024/01/01 00:00:00 Waiting for final gps fix
+sensor: depth=10 temp=12.3 sal=34.5
+mission_0: abort_the_mission
+surface_0:2024/01/01 01:00:00 Picking iridium or freewave
+iridium: connected to dockserver
+
+LOG FILE CLOSED

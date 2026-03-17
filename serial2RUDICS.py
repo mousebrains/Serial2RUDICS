@@ -24,7 +24,7 @@ def doit(serial: RealSerial, rudics: RUDICS, binary: str | None = None) -> None:
     ofp = open(binary, "wb") if binary else None
 
     try:
-        while bool(serial) or bool(rudics): # While an open serial port or stuff to send to RUDICS
+        while serial or rudics: # While an open serial port or stuff to send to RUDICS
             rudics.timedOut() # Check timeouts every iteration, not just on select timeout
 
             ifpSerial = serial.inputFileno()
@@ -74,18 +74,18 @@ def doit(serial: RealSerial, rudics: RUDICS, binary: str | None = None) -> None:
                     if n <= 0: # Transient zero from in_waiting despite select, skip
                         continue
                     c = serial.get(n) # Read a character
-                    if len(c):
+                    if c:
                         rudics.put(c)
                         if ofp:
-                            ofp.write(bytes(f"SERIAL {len(c)} : ", "UTF-8") + c + b'\n')
+                            ofp.write(f"SERIAL {len(c)} : ".encode() + c + b'\n')
                     else: # EOF
                         serial.close()
                 else: # RUDICS
                     c = rudics.get(1024 * 1024) # Read what is available up to 1MB
-                    if len(c):
+                    if c:
                         serial.put(c)
                         if ofp:
-                            ofp.write(bytes(f"RUDICS {len(c)} : ", "UTF-8") + c + b'\n')
+                            ofp.write(f"RUDICS {len(c)} : ".encode() + c + b'\n')
                     # get() already handled close and reconnect intent
     finally:
         if ofp:
@@ -106,7 +106,7 @@ logging.info('args=%s', args)
 tty = None
 rudics = None
 
-signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
+signal.signal(signal.SIGTERM, lambda _signum, _frame: sys.exit(0))
 
 try:
     args.serial = FauxSerial.setup(args)

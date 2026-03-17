@@ -23,15 +23,12 @@ class RUDICS:
                     r':\s+abort_the_mission',
                     ]
                 )
-                    # , r'init_gps_input[(][)]'
-                    # , r'end_gps_input[(][)]'
         self.triggerOff = self.__mkTrigger(args.triggerOff,
                 [
                     r'surface_\d+:.*Waiting\s+for\s+final\s+gps\s+fix',
                     r'surface_\d+:.*STATE\s+Active\s*->',
                     ]
                 )
-                    # r'behavior dive_to_\d+:\s+SUBSTATE \d+ ->\d+ : diving',
         self.secondsPerByte: float | None = \
                 None if (args.rudicsBaudrate is None) or (args.rudicsBaudrate < 1) \
                 else (9 / args.rudicsBaudrate) # Time to send 9 bits
@@ -91,26 +88,28 @@ class RUDICS:
         if len(items) == 1:
             a = items[0]
         else:
-            a = '(' + '|'.join(items) + ')'
-        return re.compile(bytes(a, 'utf-8'), re.IGNORECASE)
+            a = '|'.join(items)
+        return re.compile(a.encode(), re.IGNORECASE)
 
     def timeout(self) -> float:
         now = time.time()
+        idle_timeout: float = self.args.idleTimeout
+        max_open_time: float = self.args.rudicsMaxOpenTime
 
         if self.tLastOpen > 0:
             # Time until idle timeout (measured from last activity or connection open)
             tRef = max(self.tLastOpen, self.tLastAction or 0)
-            dt = max(1, self.args.idleTimeout - (now - tRef))
+            dt: float = max(1.0, idle_timeout - (now - tRef))
             # Time until max open time
-            dt = min(dt, max(1, self.args.rudicsMaxOpenTime - (now - self.tLastOpen)))
+            dt = min(dt, max(1.0, max_open_time - (now - self.tLastOpen)))
         else:
-            dt = max(1, self.args.idleTimeout)
+            dt = max(1.0, idle_timeout)
 
         # Wake up at tNextOpen to retry connection even if buffer is empty
         if self.qWantOpen and self.s is None and self.tNextOpen > now:
-            dt = min(dt, max(1, self.tNextOpen - now))
+            dt = min(dt, max(1.0, self.tNextOpen - now))
 
-        if not len(self.buffer):
+        if not self.buffer:
             return dt # Nothing to send, so wait this long
 
         if self.tNextOpen > now:
@@ -139,13 +138,12 @@ class RUDICS:
         if (now - tRef) >= self.args.idleTimeout:
             logging.info('Idle timeout')
             self.close()
-            self.tLastAction = now
 
     def send(self) -> None:
         logging.debug('RUDICS:send %s', len(self.buffer))
         now = time.time()
 
-        if (self.s is None) or (not len(self.buffer)) or (self.tNextSend >= now):
+        if (self.s is None) or (not self.buffer) or (self.tNextSend >= now):
             return
 
         if self.secondsPerByte is None: # Not baudrate limited
@@ -160,10 +158,9 @@ class RUDICS:
         if n >= len(self.buffer):
             m = self.write(self.buffer)
         else:
-            m = self.write(self.buffer[0:n])
+            m = self.write(self.buffer[:n])
 
-        logging.debug('RUDICS:sent full buffer m=%s n=%s len=%s buffer=%s',
-                m, n, len(self.buffer), bytes(self.buffer[:200]))
+        logging.debug('RUDICS:sent m=%s n=%s remaining=%s', m, n, len(self.buffer))
 
         self.buffer = self.buffer[m:]
 
@@ -189,7 +186,7 @@ class RUDICS:
                 if not line:
                     continue
                 try:
-                    msg = str(line, "utf-8")
+                    msg = line.decode("utf-8")
                 except Exception:
                     msg = repr(bytes(line))
 
@@ -201,20 +198,23 @@ class RUDICS:
                         self.close()
                         self.buffer = bytearray()
                         wasOpen = False
-                else:
-                    if self.triggerOn.search(line) is not None:
-                        logging.info('triggerOn matched: %s', msg.strip())
-                        self.qWantOpen = True
-                        self.open()
+                elif self.triggerOn.search(line) is not None:
+                    logging.info('triggerOn matched: %s', msg.strip())
+                    self.qWantOpen = True
+                    self.open()
 
         # Buffer data after trigger detection so trigger-on chunks are captured
-        if (wasOpen or self.qWantOpen) and len(self.buffer) < MAX_BUFFER_SIZE:
-            self.buffer += c
+        if wasOpen or self.qWantOpen:
+            if len(self.buffer) < MAX_BUFFER_SIZE:
+                self.buffer += c
+            else:
+                logging.warning('Buffer full (%s bytes), discarding %s bytes',
+                        len(self.buffer), len(c))
 
     def get(self, n: int) -> bytes:
         self.tLastAction = time.time()
         c = self.read(n)
-        if not len(c) and self.s is not None: # Connection dropped, not already handled by read()
+        if not c and self.s is not None: # Connection dropped, not already handled by read()
             self.close()
             self.qWantOpen = True # Want to reconnect
         logging.info('get n=%s len=%s', n, len(c))
@@ -228,9 +228,9 @@ class RUDICS:
     def outputFileno(self) -> socket.socket | None:
         if self.qWantOpen and (self.s is None):
             self.open()
-        return self.s if len(self.buffer) and (time.time() >= self.tNextSend) else None
+        return self.s if self.buffer and (time.time() >= self.tNextSend) else None
 
-    def write(self, buffer: bytes) -> int:
+    def write(self, buffer: bytes | bytearray) -> int:
         try:
             if self.s is not None:
                 return self.s.send(buffer)
@@ -255,8 +255,7 @@ class RUDICS:
         if self.s is None:
             return
 
-        try: # Shutdown seems to hold the connection open????
-            # s.shutdown(socket.SHUT_RDWR) # Shutdown the connection
+        try:
             self.s.close() # Free up resources
             logging.info('Closed %s:%s', self.args.host, self.args.port)
         except Exception:

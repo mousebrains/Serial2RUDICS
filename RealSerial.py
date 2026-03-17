@@ -37,17 +37,17 @@ class RealSerial:
             pass
 
     def __bool__(self) -> bool:
-        return (self.fp is not None) or bool(len(self.buffer))
+        return (self.fp is not None) or bool(self.buffer)
 
     def inputFileno(self) -> serial.Serial | None:
         return self.fp
 
     def outputFileno(self) -> serial.Serial | None:
-        return self.fp if len(self.buffer) else None
+        return self.fp if self.buffer else None
 
     def send(self) -> None:
-        if (self.fp is not None) and len(self.buffer):
-            n = self.fp.write(self.buffer[0:1]) # 1 at a time to not overload
+        if (self.fp is not None) and self.buffer:
+            n = self.fp.write(self.buffer[:1]) # 1 at a time to not overload
             self.buffer = self.buffer[n:]
 
     def put(self, c: bytes) -> None:
@@ -61,16 +61,18 @@ class RealSerial:
             return b''
         try:
             c = self.fp.read(n)
-            if len(c) == 0: # EOF
+            if not c: # EOF
                 self.close()
-            return c
-        except serial.serialutil.SerialException as e:
-            logging.error('Unexpected exception while reading serial port, %s', str(e))
+        except serial.serialutil.SerialException:
+            logging.exception('Exception while reading serial port')
+            self.close()
+            return b''
         except Exception:
             logging.exception('Unexpected exception while reading serial port')
-
-        self.close()
-        return b''
+            self.close()
+            return b''
+        else:
+            return c
 
     def __open(self) -> None:
         args = self.args

@@ -1,4 +1,3 @@
-
 # Set up a port to listen on and accept incoming a connection
 #
 # Read from a file and send to the port
@@ -65,8 +64,9 @@ class FauxDS(threading.Thread):
         except Exception:
             logging.exception('FauxDS')
 
-    def doit(self, conn: socket.socket | None) -> None:
+    def doit(self, connection: socket.socket) -> None:
         args = self.args
+        conn: socket.socket | None = connection
 
         ifn = args.dsInput
         ofn = args.dsOutput
@@ -81,22 +81,22 @@ class FauxDS(threading.Thread):
             toSocket = bytearray()
             toFile = bytearray()
 
-            while (conn is not None) or len(toFile):
+            while (conn is not None) or toFile:
                 inputs: list[Any] = []
                 outputs: list[Any] = []
 
                 if conn is not None:
                     inputs.append(conn)
-                    if len(toSocket):
+                    if toSocket:
                         outputs.append(conn)
 
                 if ifp is not None:
                     inputs.append(ifp)
 
-                if (ofp is not None) and len(toFile):
+                if (ofp is not None) and toFile:
                     outputs.append(ofp)
 
-                (ifps, ofps, efps) = select.select(inputs, outputs, [])
+                (ifps, ofps, _) = select.select(inputs, outputs, [])
 
                 for fp in ifps:
                     if fp == ifp: # File input
