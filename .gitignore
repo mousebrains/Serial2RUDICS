@@ -9,3 +9,5 @@ logs
 .venv/
 venv/
 MLG/
+.coverage
+htmlcov/
