@@ -60,7 +60,7 @@ class RealSerial:
         if self.fp is None or n <= 0:
             return b''
         try:
-            c = self.fp.read(n)
+            c: bytes = self.fp.read(n)
             if not c: # EOF
                 self.close()
         except serial.serialutil.SerialException:
