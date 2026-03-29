@@ -48,6 +48,7 @@ class RUDICS:
         self.tNextSend: float = 0
         self.tNextOpen: float = 0
         self.tLastAction: float | None = None
+        self.tLastSerialAction: float = 0  # Last time serial data was received via put()
         self.qWantOpen = not args.disconnected # Initially connection state
         self.s: socket.socket | None = None
         self.tLastBinary: float = 0  # Time of last binary data seen (zmodem transfer)
@@ -187,7 +188,9 @@ class RUDICS:
         return (time.time() - self.tLastBinary) < BINARY_SESSION_SECS
 
     def put(self, c: bytes) -> None:
-        self.tLastAction = time.time()
+        now = time.time()
+        self.tLastAction = now
+        self.tLastSerialAction = now
         wasOpen = self.qWantOpen
 
         # Track binary data for zmodem session detection
@@ -263,11 +266,13 @@ class RUDICS:
                         len(self.buffer), len(c))
 
     def get(self, n: int) -> bytes:
-        self.tLastAction = time.time()
         c = self.read(n)
         if not c and self.s is not None: # Connection dropped, not already handled by read()
+            tOpen = self.tLastOpen
             self.close()
-            self.qWantOpen = True # Want to reconnect
+            # Only reconnect if serial was active during this connection
+            if tOpen > 0 and self.tLastSerialAction >= tOpen:
+                self.qWantOpen = True
         logging.info('get n=%s len=%s', n, len(c))
         return c
 
@@ -297,8 +302,10 @@ class RUDICS:
                 return self.s.recv(n)
         except Exception:
             logging.exception('Exception while receiving %s', n)
+            tOpen = self.tLastOpen
             self.close()
-            self.qWantOpen = True
+            if tOpen > 0 and self.tLastSerialAction >= tOpen:
+                self.qWantOpen = True
         return b''
 
     def close(self) -> None:

@@ -449,48 +449,72 @@ class TestWriteReadErrors:
         """write() should close socket and set qWantOpen on exception."""
         a, b = socket.socketpair()
         b.close()  # Remote end closed
-        try:
-            r = RUDICS(make_args())
-            r.s = a
-            r.qWantOpen = True
-            a.close()  # Force exception on send
-            result = r.write(b"hello")
-            assert result == 0
-            assert r.s is None
-            assert r.qWantOpen is True
-        except Exception:
-            pass
+        r = RUDICS(make_args())
+        r.s = a
+        r.qWantOpen = True
+        a.close()  # Force exception on send
+        result = r.write(b"hello")
+        assert result == 0
+        assert r.s is None
+        assert r.qWantOpen is True
 
-    def test_read_exception_closes_and_wants_reconnect(self):
-        """read() should close socket and set qWantOpen on exception."""
+    def test_read_exception_no_serial_activity_no_reconnect(self):
+        """read() exception without serial activity should not reconnect."""
         a, b = socket.socketpair()
         b.close()
-        try:
-            r = RUDICS(make_args())
-            r.s = a
-            r.qWantOpen = True
-            a.close()  # Force exception on recv
-            result = r.read(1024)
-            assert result == b''
-            assert r.s is None
-            assert r.qWantOpen is True
-        except Exception:
-            pass
+        r = RUDICS(make_args())
+        r.s = a
+        r.tLastOpen = time.time()
+        r.qWantOpen = True
+        a.close()  # Force exception on recv
+        result = r.read(1024)
+        assert result == b''
+        assert r.s is None
+        assert r.qWantOpen is False
 
-    def test_get_empty_read_closes_and_wants_reconnect(self):
-        """get() with empty recv should close and set qWantOpen."""
+    def test_read_exception_with_serial_activity_reconnects(self):
+        """read() exception with serial activity should reconnect."""
         a, b = socket.socketpair()
-        try:
-            r = RUDICS(make_args())
-            r.s = a
-            r.qWantOpen = True
-            b.close()  # Remote closes -> recv returns b''
-            c = r.get(1024)
-            assert c == b''
-            assert r.s is None
-            assert r.qWantOpen is True
-        except Exception:
-            pass
+        b.close()
+        r = RUDICS(make_args())
+        r.s = a
+        r.tLastOpen = time.time()
+        r.tLastSerialAction = time.time()
+        r.qWantOpen = True
+        a.close()  # Force exception on recv
+        result = r.read(1024)
+        assert result == b''
+        assert r.s is None
+        assert r.qWantOpen is True
+
+    def test_get_eof_no_serial_activity_no_reconnect(self):
+        """get() EOF without serial activity should not reconnect."""
+        a, b = socket.socketpair()
+        r = RUDICS(make_args())
+        r.s = a
+        r.tLastOpen = time.time()
+        r.qWantOpen = True
+        b.close()  # Remote closes -> recv returns b''
+        c = r.get(1024)
+        assert c == b''
+        assert r.s is None
+        assert r.qWantOpen is False
+        a.close()
+
+    def test_get_eof_with_serial_activity_reconnects(self):
+        """get() EOF with serial activity should reconnect."""
+        a, b = socket.socketpair()
+        r = RUDICS(make_args())
+        r.s = a
+        r.tLastOpen = time.time()
+        r.tLastSerialAction = time.time()
+        r.qWantOpen = True
+        b.close()  # Remote closes -> recv returns b''
+        c = r.get(1024)
+        assert c == b''
+        assert r.s is None
+        assert r.qWantOpen is True
+        a.close()
 
     def test_write_returns_zero_without_socket(self):
         r = RUDICS(make_args())

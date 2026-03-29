@@ -14,6 +14,7 @@ import logging
 import select
 import signal
 import sys
+from typing import Any
 import MyLogger
 import FauxSerial
 import FauxDockServer
@@ -32,8 +33,8 @@ def doit(serial: RealSerial, rudics: RUDICS, binary: str | None = None) -> None:
             ifpRUDICS = rudics.inputFileno()
             ofpRUDICS = rudics.outputFileno()
 
-            ifps = [] # input file numbers to select on
-            ofps = [] # output file numbers to select on
+            ifps: list[Any] = [] # input file numbers to select on
+            ofps: list[Any] = [] # output file numbers to select on
 
             if ifpSerial is not None:
                 ifps.append(ifpSerial)
@@ -56,8 +57,10 @@ def doit(serial: RealSerial, rudics: RUDICS, binary: str | None = None) -> None:
                     serial.close() # Exception on the serial side
                 else: # exception on the RUDICS side
                     logging.warning('Select exception for RUDICS connection')
+                    tOpen = rudics.tLastOpen
                     rudics.close()
-                    rudics.qWantOpen = True # Reconnect after socket exception
+                    if tOpen > 0 and rudics.tLastSerialAction >= tOpen:
+                        rudics.qWantOpen = True # Reconnect — serial was active
 
             if exceptable:
                 continue # Skip reading/writing this time if there are exceptions
