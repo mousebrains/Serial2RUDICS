@@ -8,7 +8,7 @@ import time
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from RUDICS import RUDICS, MAX_BUFFER_SIZE, MAX_LINE_SIZE, BINARY_SUPPRESS_SECS
+from RUDICS import RUDICS, MAX_BUFFER_SIZE, MAX_LINE_SIZE, BINARY_SESSION_SECS
 from tests.conftest import make_args
 
 
@@ -115,13 +115,13 @@ class TestPut:
         r.put(b"surface_0: Picking iridium or freewave\n")
         assert r.qWantOpen is False
 
-    def test_trigger_works_after_binary_suppression_expires(self):
-        """After BINARY_SUPPRESS_SECS, triggers should work again."""
+    def test_trigger_works_after_binary_session_expires(self):
+        """After BINARY_SESSION_SECS, triggers should work again."""
         r = RUDICS(make_args())
         assert r.qWantOpen is True
         r.put(b"\x02B\x00\x00binary\n")
-        # Manually expire the suppression
-        r.tLastBinary = time.time() - BINARY_SUPPRESS_SECS - 1
+        # Manually expire the binary session
+        r.tLastBinary = time.time() - BINARY_SESSION_SECS - 1
         r.put(b"surface_0: Waiting for final gps fix\n")
         assert r.qWantOpen is False
 
@@ -582,3 +582,79 @@ class TestPutEdgeCases:
         small = b"new data"
         r.put(small)
         assert r.line == bytearray(small)
+
+
+# ---------------------------------------------------------------------------
+# type/cat suppression
+# ---------------------------------------------------------------------------
+
+class TestTypeCatSuppression:
+    def test_type_command_suppresses_trigger_off(self):
+        """type command should suppress triggers in displayed file."""
+        r = RUDICS(make_args())
+        assert r.qWantOpen is True
+        r.put(b"GliderDos A 11 >type 48170001.mlg\n")
+        assert r.qTypeCat is True
+        r.put(b"1200    behavior surface_4: SUBSTATE 7 ->10 : Waiting for final gps fix\n")
+        assert r.qWantOpen is True  # Should NOT disconnect
+
+    def test_type_command_suppresses_trigger_on(self):
+        """type command should suppress triggerOn in displayed file."""
+        r = RUDICS(make_args(disconnected=True))
+        assert r.qWantOpen is False
+        r.put(b"GliderDos A 11 >type 48170001.mlg\n")
+        r.put(b"mission_0: abort_the_mission\n")
+        assert r.qWantOpen is False  # Should NOT connect
+
+    def test_cat_command_suppresses_triggers(self):
+        """cat command should also suppress triggers."""
+        r = RUDICS(make_args())
+        r.put(b"GliderDos A 11 >cat 48170001.mlg\n")
+        assert r.qTypeCat is True
+        r.put(b"surface_0: Waiting for final gps fix\n")
+        assert r.qWantOpen is True
+
+    def test_log_file_closed_clears_type_flag(self):
+        """LOG FILE CLOSED should clear the type/cat suppression."""
+        r = RUDICS(make_args())
+        r.put(b"GliderDos A 11 >type 48170001.mlg\n")
+        assert r.qTypeCat is True
+        r.put(b"1679    48170001.mlg LOG FILE CLOSED\n")
+        assert r.qTypeCat is False
+        # Now triggers should work
+        r.put(b"surface_0: Waiting for final gps fix\n")
+        assert r.qWantOpen is False
+
+    def test_gliderdos_prompt_clears_type_flag(self):
+        """A GliderDos prompt (without type/cat) should clear suppression."""
+        r = RUDICS(make_args())
+        r.qTypeCat = True
+        r.put(b"GliderDos A 11 >\n")
+        assert r.qTypeCat is False
+
+    def test_gliderdos_prompt_with_type_keeps_flag(self):
+        """A GliderDos prompt containing a type command should keep the flag."""
+        r = RUDICS(make_args())
+        r.qTypeCat = False
+        r.put(b"GliderDos A 11 >type foo.mlg\n")
+        assert r.qTypeCat is True
+
+    def test_close_clears_type_flag(self):
+        """Connection close should clear the type/cat flag."""
+        r = RUDICS(make_args())
+        r.qTypeCat = True
+        r.close()
+        assert r.qTypeCat is False
+
+    def test_triggers_work_after_type_file_ends(self):
+        """After type output finishes, real triggers should fire."""
+        r = RUDICS(make_args())
+        # type command starts
+        r.put(b"GliderDos A 11 >type 48170001.mlg\n")
+        r.put(b"surface_0: Waiting for final gps fix\n")
+        assert r.qWantOpen is True  # Suppressed
+        # File ends
+        r.put(b"48170001.mlg LOG FILE CLOSED\n")
+        # Now real trigger should work
+        r.put(b"surface_0: Waiting for final gps fix\n")
+        assert r.qWantOpen is False

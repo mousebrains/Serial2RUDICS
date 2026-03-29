@@ -13,10 +13,15 @@ from RealSerial import baudrates
 
 MAX_BUFFER_SIZE = 10 * 1024 * 1024  # 10 MB
 MAX_LINE_SIZE = 1024 * 1024  # 1 MB
-BINARY_SUPPRESS_SECS = 5.0  # Suppress trigger matching after binary data (file transfer)
+BINARY_SESSION_SECS = 30.0  # How long after last binary data to consider zmodem session over
 
 # Bytes considered normal text: TAB, LF, CR, and printable ASCII (0x20-0x7E)
 _TEXT_BYTES = frozenset({0x09, 0x0A, 0x0D} | set(range(0x20, 0x7F)))
+
+# Patterns for detecting file display and GliderDos context
+_TYPE_CAT_CMD = re.compile(rb'>\s*(?:type|cat)\s+\S+', re.IGNORECASE)
+_GLIDERDOS_PROMPT = re.compile(rb'^GliderDos\s+', re.IGNORECASE)
+_LOG_FILE_CLOSED = re.compile(rb'\.mlg\s+LOG\s+FILE\s+CLOSED', re.IGNORECASE)
 
 class RUDICS:
     def __init__(self, args: argparse.Namespace) -> None:
@@ -45,7 +50,8 @@ class RUDICS:
         self.tLastAction: float | None = None
         self.qWantOpen = not args.disconnected # Initially connection state
         self.s: socket.socket | None = None
-        self.tLastBinary: float = 0  # Time of last binary data seen (file transfer)
+        self.tLastBinary: float = 0  # Time of last binary data seen (zmodem transfer)
+        self.qTypeCat: bool = False  # Suppression flag for type/cat file display
 
     @staticmethod
     def addArgs(parser: argparse.ArgumentParser) -> None:
@@ -176,15 +182,15 @@ class RUDICS:
         """Check if data contains non-text bytes indicating a file transfer."""
         return any(b not in _TEXT_BYTES for b in data)
 
-    def _inFileTransfer(self) -> bool:
-        """True if binary data was recently seen, indicating a file transfer."""
-        return (time.time() - self.tLastBinary) < BINARY_SUPPRESS_SECS
+    def _inBinarySession(self) -> bool:
+        """True if binary data was recently seen, indicating an active zmodem session."""
+        return (time.time() - self.tLastBinary) < BINARY_SESSION_SECS
 
     def put(self, c: bytes) -> None:
         self.tLastAction = time.time()
         wasOpen = self.qWantOpen
 
-        # Track binary data for file transfer detection
+        # Track binary data for zmodem session detection
         if self._hasBinaryData(c):
             self.tLastBinary = time.time()
 
@@ -199,7 +205,7 @@ class RUDICS:
             lines = self.line.split(b"\n")
             self.line = lines[-1]  # Keep incomplete tail
 
-            inTransfer = self._inFileTransfer()
+            inBinarySession = self._inBinarySession()
 
             for line in lines[:-1]:  # Process all complete lines
                 line = line.rstrip(b'\r')
@@ -211,8 +217,31 @@ class RUDICS:
                     msg = repr(bytes(line))
 
                 logging.info('qWantOpen %s line=%s', self.qWantOpen, msg.strip())
-                if inTransfer:
-                    continue  # Suppress trigger matching during file transfers
+
+                # Detect type/cat command — set suppression flag
+                if _TYPE_CAT_CMD.search(line):
+                    self.qTypeCat = True
+
+                # Clear type/cat flag on GliderDos prompt or LOG FILE CLOSED
+                if self.qTypeCat:
+                    if _GLIDERDOS_PROMPT.search(line) and not _TYPE_CAT_CMD.search(line):
+                        self.qTypeCat = False
+                    elif _LOG_FILE_CLOSED.search(line):
+                        self.qTypeCat = False
+
+                # Determine whether to suppress trigger matching:
+                # 1. Line itself contains binary data (corrupted by zmodem framing)
+                # 2. type/cat command is displaying a file
+                # 3. Active zmodem session (binary data seen recently)
+                suppress = (
+                    self._hasBinaryData(line)
+                    or self.qTypeCat
+                    or inBinarySession
+                )
+
+                if suppress:
+                    continue
+
                 if self.qWantOpen: # Check if we should turn off?
                     if self.triggerOff.search(line) is not None:
                         logging.info('triggerOff matched: %s', msg.strip())
@@ -274,6 +303,7 @@ class RUDICS:
 
     def close(self) -> None:
         self.qWantOpen = False # I don't want to be open
+        self.qTypeCat = False  # Clear type/cat suppression on disconnect
         if self.s is None:
             return
 
