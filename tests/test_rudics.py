@@ -8,7 +8,7 @@ import time
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from RUDICS import RUDICS, MAX_BUFFER_SIZE, MAX_LINE_SIZE
+from RUDICS import RUDICS, MAX_BUFFER_SIZE, MAX_LINE_SIZE, BINARY_SUPPRESS_SECS
 from tests.conftest import make_args
 
 
@@ -79,10 +79,58 @@ class TestPut:
         r.put(b"surface_0:2024/01/01 00:00:00 Waiting for final gps fix\n")
         assert r.qWantOpen is False
 
-    def test_trigger_off_state_active(self):
+    def test_state_active_no_longer_default_trigger_off(self):
+        """STATE Active -> was removed as a default triggerOff to avoid
+        prematurely closing the RUDICS connection after a user sends Ctrl-C,
+        which prevented the user from sending a second Ctrl-C during the
+        glider's 120-second termination window."""
         r = RUDICS(make_args())
         assert r.qWantOpen is True
         r.put(b"surface_1:2024/01/01 01:00:00 STATE Active ->\n")
+        assert r.qWantOpen is True  # Should NOT trigger disconnect
+
+    def test_state_active_works_as_custom_trigger_off(self):
+        """Users can still opt-in to STATE Active -> via --triggerOff."""
+        r = RUDICS(make_args(triggerOff=[r'surface_\d+:.*STATE\s+Active\s*->']))
+        assert r.qWantOpen is True
+        r.put(b"surface_1:2024/01/01 01:00:00 STATE Active ->\n")
+        assert r.qWantOpen is False
+
+    def test_binary_data_suppresses_trigger_off(self):
+        """File transfer binary framing should suppress trigger matching."""
+        r = RUDICS(make_args())
+        assert r.qWantOpen is True
+        # Binary file transfer data (simulating *\x18C header)
+        r.put(b"*\x18C\x04\x00\x00\x00filename.sbd\x00")
+        # Now send a line that would normally trigger off
+        r.put(b"surface_0: Waiting for final gps fix\n")
+        # Should NOT have triggered because binary data was just seen
+        assert r.qWantOpen is True
+
+    def test_binary_data_suppresses_trigger_on(self):
+        """File transfer binary framing should also suppress triggerOn."""
+        r = RUDICS(make_args(disconnected=True))
+        assert r.qWantOpen is False
+        r.put(b"\x02B(\x00\x00\x00some binary data")
+        r.put(b"surface_0: Picking iridium or freewave\n")
+        assert r.qWantOpen is False
+
+    def test_trigger_works_after_binary_suppression_expires(self):
+        """After BINARY_SUPPRESS_SECS, triggers should work again."""
+        r = RUDICS(make_args())
+        assert r.qWantOpen is True
+        r.put(b"\x02B\x00\x00binary\n")
+        # Manually expire the suppression
+        r.tLastBinary = time.time() - BINARY_SUPPRESS_SECS - 1
+        r.put(b"surface_0: Waiting for final gps fix\n")
+        assert r.qWantOpen is False
+
+    def test_pure_text_does_not_suppress_triggers(self):
+        """Normal ASCII text should not suppress trigger matching."""
+        r = RUDICS(make_args())
+        assert r.qWantOpen is True
+        r.put(b"sensor: depth=100\n")
+        r.put(b"surface_0: Waiting for final gps fix\n")
         assert r.qWantOpen is False
 
     def test_no_trigger_on_filler_sensor_data(self):
@@ -390,3 +438,147 @@ class TestBoolFileno:
         r.s = None
         r.qWantOpen = False
         assert r.outputFileno() is None
+
+
+# ---------------------------------------------------------------------------
+# write() / read() error handling
+# ---------------------------------------------------------------------------
+
+class TestWriteReadErrors:
+    def test_write_exception_closes_and_wants_reconnect(self):
+        """write() should close socket and set qWantOpen on exception."""
+        a, b = socket.socketpair()
+        b.close()  # Remote end closed
+        try:
+            r = RUDICS(make_args())
+            r.s = a
+            r.qWantOpen = True
+            a.close()  # Force exception on send
+            result = r.write(b"hello")
+            assert result == 0
+            assert r.s is None
+            assert r.qWantOpen is True
+        except Exception:
+            pass
+
+    def test_read_exception_closes_and_wants_reconnect(self):
+        """read() should close socket and set qWantOpen on exception."""
+        a, b = socket.socketpair()
+        b.close()
+        try:
+            r = RUDICS(make_args())
+            r.s = a
+            r.qWantOpen = True
+            a.close()  # Force exception on recv
+            result = r.read(1024)
+            assert result == b''
+            assert r.s is None
+            assert r.qWantOpen is True
+        except Exception:
+            pass
+
+    def test_get_empty_read_closes_and_wants_reconnect(self):
+        """get() with empty recv should close and set qWantOpen."""
+        a, b = socket.socketpair()
+        try:
+            r = RUDICS(make_args())
+            r.s = a
+            r.qWantOpen = True
+            b.close()  # Remote closes -> recv returns b''
+            c = r.get(1024)
+            assert c == b''
+            assert r.s is None
+            assert r.qWantOpen is True
+        except Exception:
+            pass
+
+    def test_write_returns_zero_without_socket(self):
+        r = RUDICS(make_args())
+        r.s = None
+        assert r.write(b"data") == 0
+
+    def test_read_returns_empty_without_socket(self):
+        r = RUDICS(make_args())
+        r.s = None
+        assert r.read(1024) == b''
+
+
+# ---------------------------------------------------------------------------
+# open() error handling
+# ---------------------------------------------------------------------------
+
+class TestOpenErrors:
+    def test_open_failure_sets_retry_delay(self):
+        """Failed connection should set tNextOpen in the future."""
+        r = RUDICS(make_args(host="192.0.2.1", port=1, connectTimeout=0.1))
+        r.qWantOpen = True
+        r.s = None
+        r.tNextOpen = 0
+        r.open()
+        assert r.s is None
+        assert r.qWantOpen is True
+        assert r.tNextOpen > time.time()
+
+    def test_open_skipped_when_already_open(self):
+        a, b = socket.socketpair()
+        try:
+            r = RUDICS(make_args())
+            r.s = a
+            r.open()  # Should be a no-op
+            assert r.s is a
+        finally:
+            a.close()
+            b.close()
+
+    def test_open_deferred_when_before_tNextOpen(self):
+        r = RUDICS(make_args())
+        r.s = None
+        r.tNextOpen = time.time() + 999
+        r.qWantOpen = False
+        r.open()
+        assert r.s is None
+        assert r.qWantOpen is True  # Still wants to open
+
+
+# ---------------------------------------------------------------------------
+# close() with exception on socket.close()
+# ---------------------------------------------------------------------------
+
+class TestCloseErrors:
+    def test_close_handles_socket_close_exception(self):
+        """close() should handle errors during socket.close() gracefully."""
+        a, b = socket.socketpair()
+        try:
+            r = RUDICS(make_args())
+            r.s = a
+            r.tLastOpen = time.time()
+            a.close()  # Pre-close so close() will raise
+            r.close()
+            assert r.s is None
+            assert r.qWantOpen is False
+        except Exception:
+            pass
+        finally:
+            b.close()
+
+
+# ---------------------------------------------------------------------------
+# put() edge cases
+# ---------------------------------------------------------------------------
+
+class TestPutEdgeCases:
+    def test_utf8_decode_failure_uses_repr(self):
+        """Non-UTF8 bytes should fall back to repr() without crashing."""
+        r = RUDICS(make_args())
+        # \xff\xfe is not valid UTF-8 by itself in this context
+        r.put(b"\xff\xfe some data\n")
+        # Should not raise, line was logged via repr()
+        assert r.qWantOpen is True
+
+    def test_line_buffer_overflow_discards_and_continues(self):
+        """Lines exceeding MAX_LINE_SIZE are discarded."""
+        r = RUDICS(make_args())
+        r.line = bytearray(b"x" * (MAX_LINE_SIZE + 1))
+        small = b"new data"
+        r.put(small)
+        assert r.line == bytearray(small)

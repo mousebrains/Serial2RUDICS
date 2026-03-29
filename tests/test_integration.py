@@ -69,8 +69,8 @@ def _build_surface_cycle(cycle: int) -> str:
         f"sensor: depth={cycle * 100 + 10} temp=12.3 sal=34.5",
         f"sensor: depth={cycle * 100 + 50} temp=11.8 sal=34.6",
         f"surface_{cycle}:2024/01/01 01:00:{cycle:02d} Picking iridium or freewave",
-        f"iridium: connected to dockserver",
-        f"iridium: data transfer complete",
+        "iridium: connected to dockserver",
+        "iridium: data transfer complete",
     ]
     return "\r\n".join(lines) + "\r\n"
 

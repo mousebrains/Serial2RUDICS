@@ -28,8 +28,8 @@ def build_synthetic_mlg(*, include_abort: bool = False, cycles: int = 2) -> byte
 
         # Surface → triggerOn (glider coming up)
         lines.append(f"surface_{i}:2024/01/01 01:00:{i:02d} Picking iridium or freewave")
-        lines.append(f"iridium: connected to dockserver")
-        lines.append(f"iridium: data transfer complete")
+        lines.append("iridium: connected to dockserver")
+        lines.append("iridium: data transfer complete")
 
     lines.append("")
     lines.append("LOG FILE CLOSED")

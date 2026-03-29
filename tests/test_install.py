@@ -1,6 +1,23 @@
-import sys, os
+import sys
+import os
+from argparse import Namespace
+
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from install import barebones
+from install import barebones, substitute_template, validate_args
+
+
+def _install_args(**overrides):  # type: ignore[no-untyped-def]
+    defaults = dict(
+        username="testuser", group="dialout",
+        directory="/home/testuser/logs",
+        executable="serial2RUDICS.py",
+        hostname="example.host.edu", port=6565,
+        baudrate=115200, timeout=3600, restartSeconds=60,
+    )
+    defaults.update(overrides)
+    return Namespace(**defaults)
 
 
 def test_barebones_strips_comments():
@@ -31,46 +48,56 @@ def test_barebones_preserves_content():
     assert result == ["first", "second", "third"]
 
 
-def test_template_substitution():
-    """The .replace() chain from install.py substitutes all @MARKER@ tokens."""
+def test_substitute_template():
+    """substitute_template replaces all @MARKER@ tokens."""
     template = (
-        "# Generated service file\n"
-        "# @DATE@\n"
         "User=@USERNAME@\n"
         "Group=@GROUPNAME@\n"
         "WorkingDirectory=@DIRECTORY@\n"
         "ExecStart=@EXECUTABLE@ --host @HOSTNAME@ --port @PORT@"
         " --baudrate @BAUDRATE@ --timeout @TIMEOUT@\n"
         "RestartSec=@RESTARTSECONDS@\n"
-        "# @GENERATED@\n"
     )
+    args = _install_args()
+    content = substitute_template(template, args, "/opt/bin")
 
-    # Replicate the replacement chain from install.py
-    content = template
-    content = content.replace("@DATE@", "Generated on Mon Jan  1 00:00:00 2024")
-    content = content.replace("@GENERATED@", "Namespace(fake=True)")
-    content = content.replace("@USERNAME@", "testuser")
-    content = content.replace("@GROUPNAME@", "dialout")
-    content = content.replace("@DIRECTORY@", "/home/testuser/logs")
-    content = content.replace("@EXECUTABLE@", "/opt/bin/serial2RUDICS.py")
-    content = content.replace("@HOSTNAME@", "example.host.edu")
-    content = content.replace("@PORT@", "6565")
-    content = content.replace("@BAUDRATE@", "115200")
-    content = content.replace("@TIMEOUT@", "3600")
-    content = content.replace("@RESTARTSECONDS@", "60")
-
-    assert "@" not in content.replace("@", "", content.count("@"))  # crude leftover check
-    # Verify specific substitutions
     assert "User=testuser" in content
     assert "Group=dialout" in content
     assert "WorkingDirectory=/home/testuser/logs" in content
-    assert "ExecStart=/opt/bin/serial2RUDICS.py --host example.host.edu --port 6565" in content
+    assert "--host example.host.edu --port 6565" in content
     assert "--baudrate 115200 --timeout 3600" in content
     assert "RestartSec=60" in content
-    # No un-replaced markers remain
-    for marker in (
-        "@DATE@", "@GENERATED@", "@USERNAME@", "@GROUPNAME@",
-        "@DIRECTORY@", "@EXECUTABLE@", "@HOSTNAME@", "@PORT@",
-        "@BAUDRATE@", "@TIMEOUT@", "@RESTARTSECONDS@",
-    ):
+    for marker in ("@USERNAME@", "@GROUPNAME@", "@DIRECTORY@",
+                    "@HOSTNAME@", "@PORT@", "@BAUDRATE@",
+                    "@TIMEOUT@", "@RESTARTSECONDS@"):
         assert marker not in content
+
+
+def test_substitute_template_executable_uses_root():
+    """@EXECUTABLE@ is joined with the root directory."""
+    content = substitute_template("@EXECUTABLE@", _install_args(), "/srv/app")
+    assert content == "/srv/app/serial2RUDICS.py"
+
+
+def test_validate_args_accepts_valid():
+    validate_args(_install_args())
+
+
+def test_validate_args_rejects_port_zero():
+    with pytest.raises(SystemExit, match="--port"):
+        validate_args(_install_args(port=0))
+
+
+def test_validate_args_rejects_port_too_high():
+    with pytest.raises(SystemExit, match="--port"):
+        validate_args(_install_args(port=70000))
+
+
+def test_validate_args_rejects_negative_timeout():
+    with pytest.raises(SystemExit, match="--timeout"):
+        validate_args(_install_args(timeout=0))
+
+
+def test_validate_args_rejects_negative_restart():
+    with pytest.raises(SystemExit, match="--restartSeconds"):
+        validate_args(_install_args(restartSeconds=-1))

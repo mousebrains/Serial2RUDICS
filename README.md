@@ -17,6 +17,8 @@ The pocket/shoebox/glider is now only connected while on the surface, similar to
 
 ## Installation
 
+The service defaults to running as the current user with logs written to `~/logs/`. **Run `install.py` as your normal user (not via `sudo`)** — it invokes `sudo` internally for the privileged steps. Running the script itself under `sudo` would cause the service to run as root with logs in `/root/logs/`.
+
 1. Add your user to the `dialout` group (for serial port access):
    ```
    sudo usermod -aG dialout $USER

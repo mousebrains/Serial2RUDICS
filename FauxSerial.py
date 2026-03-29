@@ -66,7 +66,7 @@ class FauxSerial(threading.Thread):
         logging.info('FauxSerial opened %s for input', ifn)
         logging.info('FauxSerial opened %s for output', ofn)
 
-        maxSize = 65536 # Maximum length of internal buffers
+        maxSize = 65536 # Maximum length of internal select buffers
         toSerial = bytearray() # Buffer to send to pseudo-tty
         toFile = bytearray() # Buffer to send to the file
 

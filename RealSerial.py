@@ -48,7 +48,8 @@ class RealSerial:
     def send(self) -> None:
         if (self.fp is not None) and self.buffer:
             n = self.fp.write(self.buffer[:1]) # 1 at a time to not overload
-            self.buffer = self.buffer[n:]
+            if n > 0:
+                self.buffer = self.buffer[n:]
 
     def put(self, c: bytes) -> None:
         self.buffer += c

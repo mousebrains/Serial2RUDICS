@@ -3,7 +3,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import serial
 import serial.serialutil
@@ -109,6 +109,18 @@ def test_send_noop_when_buffer_empty(mock_serial_cls):
     rs = RealSerial(_make_serial_args())
     rs.send()  # buffer is empty
     mock_serial_cls.return_value.write.assert_not_called()
+
+
+@patch("serial.Serial")
+def test_send_zero_write_does_not_consume_buffer(mock_serial_cls):
+    """If write() returns 0, buffer should not advance."""
+    mock_fp = mock_serial_cls.return_value
+    mock_fp.write.return_value = 0
+
+    rs = RealSerial(_make_serial_args())
+    rs.put(b"ABC")
+    rs.send()
+    assert bytes(rs.buffer) == b"ABC"  # Unchanged
 
 
 # ── get() ────────────────────────────────────────────────────────────

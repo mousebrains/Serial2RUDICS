@@ -13,6 +13,10 @@ from RealSerial import baudrates
 
 MAX_BUFFER_SIZE = 10 * 1024 * 1024  # 10 MB
 MAX_LINE_SIZE = 1024 * 1024  # 1 MB
+BINARY_SUPPRESS_SECS = 5.0  # Suppress trigger matching after binary data (file transfer)
+
+# Bytes considered normal text: TAB, LF, CR, and printable ASCII (0x20-0x7E)
+_TEXT_BYTES = frozenset({0x09, 0x0A, 0x0D} | set(range(0x20, 0x7F)))
 
 class RUDICS:
     def __init__(self, args: argparse.Namespace) -> None:
@@ -26,7 +30,6 @@ class RUDICS:
         self.triggerOff = self.__mkTrigger(args.triggerOff,
                 [
                     r'surface_\d+:.*Waiting\s+for\s+final\s+gps\s+fix',
-                    r'surface_\d+:.*STATE\s+Active\s*->',
                     ]
                 )
         self.secondsPerByte: float | None = \
@@ -42,6 +45,7 @@ class RUDICS:
         self.tLastAction: float | None = None
         self.qWantOpen = not args.disconnected # Initially connection state
         self.s: socket.socket | None = None
+        self.tLastBinary: float = 0  # Time of last binary data seen (file transfer)
 
     @staticmethod
     def addArgs(parser: argparse.ArgumentParser) -> None:
@@ -167,19 +171,35 @@ class RUDICS:
         if m > 0:
             self.tLastSend = now
 
+    @staticmethod
+    def _hasBinaryData(data: bytes | bytearray) -> bool:
+        """Check if data contains non-text bytes indicating a file transfer."""
+        return any(b not in _TEXT_BYTES for b in data)
+
+    def _inFileTransfer(self) -> bool:
+        """True if binary data was recently seen, indicating a file transfer."""
+        return (time.time() - self.tLastBinary) < BINARY_SUPPRESS_SECS
+
     def put(self, c: bytes) -> None:
         self.tLastAction = time.time()
         wasOpen = self.qWantOpen
 
+        # Track binary data for file transfer detection
+        if self._hasBinaryData(c):
+            self.tLastBinary = time.time()
+
         self.line += c
 
         if len(self.line) > MAX_LINE_SIZE:
-            logging.warning('Line buffer exceeded %s bytes, discarding', MAX_LINE_SIZE)
+            logging.warning('Line buffer exceeded %s bytes, discarding %s bytes',
+                    MAX_LINE_SIZE, len(self.line) - len(c))
             self.line = bytearray(c)
 
         if b'\n' in self.line:
             lines = self.line.split(b"\n")
             self.line = lines[-1]  # Keep incomplete tail
+
+            inTransfer = self._inFileTransfer()
 
             for line in lines[:-1]:  # Process all complete lines
                 line = line.rstrip(b'\r')
@@ -191,6 +211,8 @@ class RUDICS:
                     msg = repr(bytes(line))
 
                 logging.info('qWantOpen %s line=%s', self.qWantOpen, msg.strip())
+                if inTransfer:
+                    continue  # Suppress trigger matching during file transfers
                 if self.qWantOpen: # Check if we should turn off?
                     if self.triggerOff.search(line) is not None:
                         logging.info('triggerOff matched: %s', msg.strip())

@@ -4,7 +4,7 @@
 #
 # Jan-2023, Pat Welch, pat@mousebrains.com
 
-from argparse import ArgumentParser
+from argparse import ArgumentParser, Namespace
 import getpass
 import subprocess
 from tempfile import NamedTemporaryFile
@@ -19,6 +19,30 @@ def barebones(content: str) -> list[str]:
             continue
         lines.append(line)
     return lines
+
+def substitute_template(content: str, args: Namespace, root: str) -> str:
+    """Replace @MARKER@ placeholders in a service template with args values."""
+    content = content.replace("@DATE@", "Generated on " + time.asctime())
+    content = content.replace("@GENERATED@", str(args))
+    content = content.replace("@USERNAME@", args.username)
+    content = content.replace("@GROUPNAME@", args.group)
+    content = content.replace("@DIRECTORY@", args.directory)
+    content = content.replace("@EXECUTABLE@", os.path.join(root, args.executable))
+    content = content.replace("@HOSTNAME@", args.hostname)
+    content = content.replace("@PORT@", str(args.port))
+    content = content.replace("@BAUDRATE@", str(args.baudrate))
+    content = content.replace("@TIMEOUT@", str(args.timeout))
+    content = content.replace("@RESTARTSECONDS@", str(args.restartSeconds))
+    return content
+
+def validate_args(args: Namespace) -> None:
+    """Validate arguments, raising SystemExit on invalid values."""
+    if not 1 <= args.port <= 65535:
+        raise SystemExit(f"--port must be 1-65535, got {args.port}")
+    if args.timeout < 1:
+        raise SystemExit(f"--timeout must be positive, got {args.timeout}")
+    if args.restartSeconds < 1:
+        raise SystemExit(f"--restartSeconds must be positive, got {args.restartSeconds}")
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -59,7 +83,9 @@ if __name__ == "__main__":
         args.username = getpass.getuser()
 
     if args.directory is None:
-        args.directory = "~/logs" # working directory to move to
+        args.directory = os.path.expanduser(f"~{args.username}/logs")
+
+    validate_args(args)
 
     args.directory = os.path.abspath(os.path.expanduser(args.directory))
     args.serviceDirectory = os.path.abspath(os.path.expanduser(args.serviceDirectory))
@@ -83,17 +109,7 @@ if __name__ == "__main__":
 
         with open(service) as fp:
             content = fp.read() # Load the new service
-        content = content.replace("@DATE@", "Generated on " + time.asctime())
-        content = content.replace("@GENERATED@", str(args))
-        content = content.replace("@USERNAME@", args.username)
-        content = content.replace("@GROUPNAME@", args.group)
-        content = content.replace("@DIRECTORY@", args.directory)
-        content = content.replace("@EXECUTABLE@", os.path.join(root, args.executable))
-        content = content.replace("@HOSTNAME@", args.hostname)
-        content = content.replace("@PORT@", str(args.port))
-        content = content.replace("@BAUDRATE@", str(args.baudrate))
-        content = content.replace("@TIMEOUT@", str(args.timeout))
-        content = content.replace("@RESTARTSECONDS@", str(args.restartSeconds))
+        content = substitute_template(content, args, root)
 
         if not args.force and os.path.exists(target):
             try:
