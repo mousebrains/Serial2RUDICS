@@ -12,7 +12,7 @@ The pocket/shoebox/glider is now only connected while on the surface, similar to
 
 ## Dependencies
 
-- Python 3.13+
+- Python 3.11+ (Debian Bookworm ships 3.11; Trixie ships 3.13). CI tests 3.11, 3.12, and 3.13.
 - [pyserial](https://pypi.org/project/pyserial/) (`pip install pyserial` or `pip install -r requirements.txt`)
 
 ## Installation
@@ -81,6 +81,6 @@ Trigger matching is suppressed during file transfers to avoid spurious closes:
 
 ## Notes
 
-This is a Python 3 program. It has been tested on Raspberry Pi OS (Debian Trixie) running Python 3.13.
+This is a Python 3 program. It has been tested on Raspberry Pi OS (Debian Trixie) running Python 3.13, and CI runs the test suite on Python 3.11, 3.12, and 3.13.
 
 The only non-standard Python module you might have to install is pyserial.
