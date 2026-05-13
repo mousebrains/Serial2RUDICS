@@ -51,7 +51,9 @@ class RUDICS:
         self.tNextSend: float = 0
         self.tNextOpen: float = 0
         self.tLastAction: float | None = None
-        self.tLastSerialAction: float = 0  # Last time serial data was received via put()
+        # None until put() sees the first byte; bare 0 sentinel would clash with
+        # the small time.monotonic() values seen on freshly-booted CI runners.
+        self.tLastSerialAction: float | None = None
         self.qWantOpen = not args.disconnected # Initially connection state
         self.s: socket.socket | None = None
         # Init to -inf so _inBinarySession returns False before any binary
@@ -343,7 +345,7 @@ class RUDICS:
         # for longer than reconnectMaxSerialIdle (or never seen) — that caps
         # flapping when the glider stops talking, without losing reconnects
         # during normal SFMC ~5-min idle reaps.
-        if self.tLastSerialAction <= 0 or \
+        if self.tLastSerialAction is None or \
                 (time.monotonic() - self.tLastSerialAction) > self.args.reconnectMaxSerialIdle:
             self.qWantOpen = False
         self.qTypeCat = False  # Clear type/cat suppression on disconnect

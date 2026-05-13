@@ -277,7 +277,7 @@ class TestTimedOut:
             # idleTimeout fires when there's been no serial activity for an
             # extended period — close() then demotes intent because serial has
             # been silent for > reconnectMaxSerialIdle (here, since program
-            # start: tLastSerialAction is still 0).
+            # start: tLastSerialAction is still None).
             assert r.qWantOpen is False
         finally:
             b.close()
@@ -436,14 +436,14 @@ class TestCloseSerialIdleThreshold:
         assert r.qWantOpen is False
 
     def test_close_demotes_intent_when_serial_never_seen(self):
-        """Never seen serial (tLastSerialAction == 0): close() demotes to False.
+        """Never seen serial (tLastSerialAction is None): close() demotes to False.
 
         This is the idle-USB-dongle case: plugged in, nothing talking, the
         initial connection gets dropped by SFMC and we stop redialing.
         """
         r = RUDICS(make_args(reconnectMaxSerialIdle=600))
         r.qWantOpen = True
-        assert r.tLastSerialAction == 0
+        assert r.tLastSerialAction is None
         r.close()
         assert r.qWantOpen is False
 
