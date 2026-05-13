@@ -13,8 +13,6 @@ import select
 from io import FileIO, BufferedWriter
 from typing import Any
 
-fauxSerial = None
-
 def addArgs(parser: argparse.ArgumentParser) -> None:
     ''' Add my command line arguments '''
     grp = parser.add_mutually_exclusive_group(required=True)
@@ -27,14 +25,17 @@ def addArgs(parser: argparse.ArgumentParser) -> None:
             help='File to write serial output to')
 
 def setup(args: argparse.Namespace) -> str:
-    ''' Return the serial device name to use, and start a ptty/thread if needed '''
-    global fauxSerial
+    ''' Return the serial device name to use, and start a ptty/thread if needed.
+
+    The created daemon thread keeps itself alive via threading._active; no
+    external reference is required.
+    '''
     if args.serial is not None:
         serial_port: str = args.serial
         return serial_port
-    fauxSerial = FauxSerial(args)
-    fauxSerial.start()
-    return fauxSerial.port
+    instance = FauxSerial(args)
+    instance.start()
+    return instance.port
 
 class FauxSerial(threading.Thread):
     ''' Create a pseudo-tty and read from a file and send to the ptty and the inverse '''
@@ -147,7 +148,7 @@ class FauxSerial(threading.Thread):
                             continue
                         try:
                             n = os.write(fp, toSerial)
-                            toSerial = toSerial[n:]
+                            del toSerial[:n]
                         except OSError:
                             logging.info('FauxSerial master write error, closing PTY')
                             os.close(fp)
@@ -155,7 +156,7 @@ class FauxSerial(threading.Thread):
                     else:
                         n = fp.write(toFile)
                         fp.flush()
-                        toFile = toFile[n:]
+                        del toFile[:n]
 
             logging.info('FauxSerial Fell out of while loop')
         finally:

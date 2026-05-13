@@ -13,7 +13,7 @@
 
 [Unit]
 Description=ttyUSB to RUDICS service on %I
-BindTo=dev-%i.device
+BindsTo=dev-%i.device
 After=dev-%i.device
 
 [Service]
@@ -36,8 +36,13 @@ TimeoutStopSec=30
 RestartSec=@RESTARTSECONDS@
 Restart=always
 
+# Cap RSS per instance so a runaway buffer can't OOM a Pi 3B running
+# multiple ports. Systemd will kill+restart on breach.
+MemoryMax=@MEMORYMAX@
+
 NoNewPrivileges=true
-ProtectSystem=full
+ProtectSystem=strict
+ReadWritePaths=@DIRECTORY@
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

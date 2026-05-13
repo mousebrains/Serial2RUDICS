@@ -1,5 +1,6 @@
 import math
 import re
+import select
 import socket
 import sys
 import os
@@ -10,6 +11,17 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from RUDICS import RUDICS, MAX_BUFFER_SIZE, MAX_LINE_SIZE, BINARY_SESSION_SECS
 from tests.conftest import make_args
+
+
+def _drive_connect(r: RUDICS, timeout: float = 1.0) -> None:
+    """Drive a non-blocking connect to completion via select() + _checkConnect."""
+    if not r.qConnecting or r.s is None:
+        return
+    deadline = time.monotonic() + timeout
+    while r.qConnecting and time.monotonic() < deadline:
+        _, w, _ = select.select([], [r.s], [], 0.05)
+        if w:
+            r._checkConnect()
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +133,7 @@ class TestPut:
         assert r.qWantOpen is True
         r.put(b"\x02B\x00\x00binary\n")
         # Manually expire the binary session
-        r.tLastBinary = time.time() - BINARY_SESSION_SECS - 1
+        r.tLastBinary = time.monotonic() - BINARY_SESSION_SECS - 1
         r.put(b"surface_0: Waiting for final gps fix\n")
         assert r.qWantOpen is False
 
@@ -213,7 +225,7 @@ class TestTimeout:
 
     def test_respects_max_open_time_when_connected(self):
         r = RUDICS(make_args(rudicsMaxOpenTime=10, idleTimeout=3600))
-        now = time.time()
+        now = time.monotonic()
         r.tLastOpen = now - 5  # Opened 5 seconds ago
         r.tLastAction = now
         dt = r.timeout()
@@ -224,7 +236,7 @@ class TestTimeout:
         r = RUDICS(make_args(idleTimeout=3600))
         r.qWantOpen = True
         r.s = None
-        now = time.time()
+        now = time.monotonic()
         r.tNextOpen = now + 3.0
         dt = r.timeout()
         assert dt <= 4.0
@@ -232,7 +244,7 @@ class TestTimeout:
     def test_baudrate_send_delay_in_buffer(self):
         r = RUDICS(make_args(rudicsBaudrate=9600, idleTimeout=3600))
         r.buffer = bytearray(b"hello")
-        now = time.time()
+        now = time.monotonic()
         r.tNextSend = now + 2.0
         dt = r.timeout()
         assert dt <= 3.0
@@ -256,7 +268,7 @@ class TestTimedOut:
         a, b = socket.socketpair()
         try:
             r.s = a
-            now = time.time()
+            now = time.monotonic()
             r.tLastOpen = now - 10
             r.tLastAction = now - 10
             r.qWantOpen = True
@@ -271,7 +283,7 @@ class TestTimedOut:
         a, b = socket.socketpair()
         try:
             r.s = a
-            now = time.time()
+            now = time.monotonic()
             r.tLastOpen = now - 15  # Exceeds rudicsMaxOpenTime of 10
             r.tLastAction = now  # Recent activity, so idle timeout won't fire first
             r.qWantOpen = True
@@ -342,7 +354,7 @@ class TestSend:
             r = RUDICS(make_args(rudicsBaudrate=baud))
             r.s = a
             r.buffer = bytearray(b"x" * 1000)
-            now = time.time()
+            now = time.monotonic()
             # Simulate: last send was 0.01 seconds ago
             dt = 0.01
             r.tLastSend = now - dt
@@ -369,14 +381,17 @@ class TestOpenClose:
         r = RUDICS(rudics_args)
         r.open()
         assert r.s is not None
+        _drive_connect(r)
+        assert r.qConnecting is False
         assert r.tLastOpen > 0
         r.close()
 
     def test_close_sets_spacing_delay(self, rudics_args):
         r = RUDICS(rudics_args)
         r.open()
+        _drive_connect(r)
         assert r.s is not None
-        now_before = time.time()
+        now_before = time.monotonic()
         r.close()
         assert r.s is None
         # tNextOpen should be in the future by at least rudicsSpacing
@@ -385,6 +400,7 @@ class TestOpenClose:
     def test_close_is_idempotent(self, rudics_args):
         r = RUDICS(rudics_args)
         r.open()
+        _drive_connect(r)
         r.close()
         first_tNextOpen = r.tNextOpen
         # Second close should be a no-op (socket is already None)
@@ -464,7 +480,7 @@ class TestWriteReadErrors:
         b.close()
         r = RUDICS(make_args())
         r.s = a
-        r.tLastOpen = time.time()
+        r.tLastOpen = time.monotonic()
         r.qWantOpen = True
         a.close()  # Force exception on recv
         result = r.read(1024)
@@ -478,8 +494,8 @@ class TestWriteReadErrors:
         b.close()
         r = RUDICS(make_args())
         r.s = a
-        r.tLastOpen = time.time()
-        r.tLastSerialAction = time.time()
+        r.tLastOpen = time.monotonic()
+        r.tLastSerialAction = time.monotonic()
         r.qWantOpen = True
         a.close()  # Force exception on recv
         result = r.read(1024)
@@ -492,7 +508,7 @@ class TestWriteReadErrors:
         a, b = socket.socketpair()
         r = RUDICS(make_args())
         r.s = a
-        r.tLastOpen = time.time()
+        r.tLastOpen = time.monotonic()
         r.qWantOpen = True
         b.close()  # Remote closes -> recv returns b''
         c = r.get(1024)
@@ -506,8 +522,8 @@ class TestWriteReadErrors:
         a, b = socket.socketpair()
         r = RUDICS(make_args())
         r.s = a
-        r.tLastOpen = time.time()
-        r.tLastSerialAction = time.time()
+        r.tLastOpen = time.monotonic()
+        r.tLastSerialAction = time.monotonic()
         r.qWantOpen = True
         b.close()  # Remote closes -> recv returns b''
         c = r.get(1024)
@@ -532,16 +548,32 @@ class TestWriteReadErrors:
 # ---------------------------------------------------------------------------
 
 class TestOpenErrors:
-    def test_open_failure_sets_retry_delay(self):
-        """Failed connection should set tNextOpen in the future."""
+    def test_open_initiates_non_blocking_connect_to_unreachable(self):
+        """Non-blocking connect to an unreachable host returns immediately
+        with qConnecting set, leaving the main loop free to keep reading."""
         r = RUDICS(make_args(host="192.0.2.1", port=1, connectTimeout=0.1))
         r.qWantOpen = True
         r.s = None
         r.tNextOpen = 0
         r.open()
+        assert r.qConnecting is True
+        assert r.s is not None
+        assert r.qWantOpen is True
+
+    def test_connect_timeout_via_timedOut(self):
+        """timedOut should abandon a connect that overruns connectTimeout."""
+        r = RUDICS(make_args(host="192.0.2.1", port=1, connectTimeout=0.05))
+        r.qWantOpen = True
+        r.s = None
+        r.tNextOpen = 0
+        r.open()
+        assert r.qConnecting is True
+        time.sleep(0.1)
+        r.timedOut()
+        assert r.qConnecting is False
         assert r.s is None
         assert r.qWantOpen is True
-        assert r.tNextOpen > time.time()
+        assert r.tNextOpen > time.monotonic()
 
     def test_open_skipped_when_already_open(self):
         a, b = socket.socketpair()
@@ -557,7 +589,7 @@ class TestOpenErrors:
     def test_open_deferred_when_before_tNextOpen(self):
         r = RUDICS(make_args())
         r.s = None
-        r.tNextOpen = time.time() + 999
+        r.tNextOpen = time.monotonic() + 999
         r.qWantOpen = False
         r.open()
         assert r.s is None
@@ -575,7 +607,7 @@ class TestCloseErrors:
         try:
             r = RUDICS(make_args())
             r.s = a
-            r.tLastOpen = time.time()
+            r.tLastOpen = time.monotonic()
             a.close()  # Pre-close so close() will raise
             r.close()
             assert r.s is None

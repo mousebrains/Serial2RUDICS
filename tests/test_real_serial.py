@@ -1,5 +1,6 @@
-import sys
+import fcntl
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -8,7 +9,7 @@ from unittest.mock import patch
 import serial
 import serial.serialutil
 
-from RealSerial import RealSerial
+from RealSerial import RealSerial, WRITE_CHUNK_BYTES
 from tests.conftest import make_args
 
 
@@ -21,8 +22,9 @@ def _make_serial_args(**overrides):
 
 # ── Init ─────────────────────────────────────────────────────────────
 
+@patch("fcntl.fcntl")
 @patch("serial.Serial")
-def test_init_opens_port_with_correct_args(mock_serial_cls):
+def test_init_opens_port_with_correct_args(mock_serial_cls, mock_fcntl):
     args = _make_serial_args(baudrate=9600, parity="E", bytesize=7, stopbits=2)
     rs = RealSerial(args)
 
@@ -36,6 +38,23 @@ def test_init_opens_port_with_correct_args(mock_serial_cls):
     assert rs.fp is mock_serial_cls.return_value
 
 
+@patch("fcntl.fcntl")
+@patch("serial.Serial")
+def test_init_sets_nonblocking(mock_serial_cls, mock_fcntl):
+    """__open should set O_NONBLOCK on the serial fd so writes never block."""
+    mock_fp = mock_serial_cls.return_value
+    mock_fp.fileno.return_value = 5
+    mock_fcntl.return_value = 0  # initial flags
+
+    RealSerial(_make_serial_args())
+
+    # F_GETFL then F_SETFL with O_NONBLOCK ORed in
+    assert mock_fcntl.call_count == 2
+    get_call, set_call = mock_fcntl.call_args_list
+    assert get_call.args == (5, fcntl.F_GETFL)
+    assert set_call.args == (5, fcntl.F_SETFL, 0 | os.O_NONBLOCK)
+
+
 @patch("serial.Serial", side_effect=serial.serialutil.SerialException("boom"))
 def test_init_handles_serial_exception(mock_serial_cls):
     """SerialException during open should not propagate; fp stays None."""
@@ -47,23 +66,26 @@ def test_init_handles_serial_exception(mock_serial_cls):
 
 # ── __bool__ ─────────────────────────────────────────────────────────
 
+@patch("fcntl.fcntl")
 @patch("serial.Serial")
-def test_bool_true_with_open_port(mock_serial_cls):
+def test_bool_true_with_open_port(mock_serial_cls, mock_fcntl):
     rs = RealSerial(_make_serial_args())
     assert rs.fp is not None
     assert bool(rs) is True
 
 
+@patch("fcntl.fcntl")
 @patch("serial.Serial")
-def test_bool_true_with_buffer(mock_serial_cls):
+def test_bool_true_with_buffer(mock_serial_cls, mock_fcntl):
     rs = RealSerial(_make_serial_args())
     rs.fp = None
     rs.buffer = bytearray(b"data")
     assert bool(rs) is True
 
 
+@patch("fcntl.fcntl")
 @patch("serial.Serial")
-def test_bool_false_when_no_port_and_no_buffer(mock_serial_cls):
+def test_bool_false_when_no_port_and_no_buffer(mock_serial_cls, mock_fcntl):
     rs = RealSerial(_make_serial_args())
     rs.fp = None
     rs.buffer = bytearray()
@@ -72,8 +94,9 @@ def test_bool_false_when_no_port_and_no_buffer(mock_serial_cls):
 
 # ── put() ────────────────────────────────────────────────────────────
 
+@patch("fcntl.fcntl")
 @patch("serial.Serial")
-def test_put_accumulates_buffer(mock_serial_cls):
+def test_put_accumulates_buffer(mock_serial_cls, mock_fcntl):
     rs = RealSerial(_make_serial_args())
     rs.put(b"abc")
     rs.put(b"def")
@@ -82,40 +105,96 @@ def test_put_accumulates_buffer(mock_serial_cls):
 
 # ── send() ───────────────────────────────────────────────────────────
 
+@patch("fcntl.fcntl")
+@patch("os.write")
 @patch("serial.Serial")
-def test_send_writes_one_byte_and_advances(mock_serial_cls):
+def test_send_writes_chunk_and_advances(mock_serial_cls, mock_os_write, mock_fcntl):
     mock_fp = mock_serial_cls.return_value
-    mock_fp.write.return_value = 1
+    mock_fp.fileno.return_value = 7
+    mock_os_write.return_value = 3
 
     rs = RealSerial(_make_serial_args())
     rs.put(b"XYZ")
     rs.send()
 
-    mock_fp.write.assert_called_once_with(bytearray(b"X"))
-    assert bytes(rs.buffer) == b"YZ"
+    mock_os_write.assert_called_once_with(7, b"XYZ")
+    assert bytes(rs.buffer) == b""
 
 
+@patch("fcntl.fcntl")
+@patch("os.write")
 @patch("serial.Serial")
-def test_send_noop_when_no_port(mock_serial_cls):
+def test_send_caps_at_chunk_size(mock_serial_cls, mock_os_write, mock_fcntl):
+    """send() should write at most WRITE_CHUNK_BYTES per call."""
+    mock_fp = mock_serial_cls.return_value
+    mock_fp.fileno.return_value = 7
+    mock_os_write.return_value = WRITE_CHUNK_BYTES
+
+    rs = RealSerial(_make_serial_args())
+    rs.put(b"A" * (WRITE_CHUNK_BYTES + 100))
+    rs.send()
+
+    (fd, payload), _ = mock_os_write.call_args
+    assert fd == 7
+    assert len(payload) == WRITE_CHUNK_BYTES
+    assert len(rs.buffer) == 100
+
+
+@patch("fcntl.fcntl")
+@patch("os.write")
+@patch("serial.Serial")
+def test_send_handles_blocking_io_error(mock_serial_cls, mock_os_write, mock_fcntl):
+    """BlockingIOError (EAGAIN) should leave the buffer untouched."""
+    mock_fp = mock_serial_cls.return_value
+    mock_fp.fileno.return_value = 7
+    mock_os_write.side_effect = BlockingIOError()
+
+    rs = RealSerial(_make_serial_args())
+    rs.put(b"ABC")
+    rs.send()
+    assert bytes(rs.buffer) == b"ABC"
+    assert rs.fp is mock_fp  # Port stays open on EAGAIN
+
+
+@patch("fcntl.fcntl")
+@patch("os.write")
+@patch("serial.Serial")
+def test_send_closes_port_on_oserror(mock_serial_cls, mock_os_write, mock_fcntl):
+    """Generic OSError on write should close the port."""
+    mock_fp = mock_serial_cls.return_value
+    mock_fp.fileno.return_value = 7
+    mock_os_write.side_effect = OSError("write failed")
+
+    rs = RealSerial(_make_serial_args())
+    rs.put(b"ABC")
+    rs.send()
+    assert rs.fp is None
+
+
+@patch("fcntl.fcntl")
+@patch("serial.Serial")
+def test_send_noop_when_no_port(mock_serial_cls, mock_fcntl):
     rs = RealSerial(_make_serial_args())
     rs.fp = None
     rs.put(b"data")
     rs.send()  # should not raise
-    mock_serial_cls.return_value.write.assert_not_called()
 
 
+@patch("fcntl.fcntl")
 @patch("serial.Serial")
-def test_send_noop_when_buffer_empty(mock_serial_cls):
+def test_send_noop_when_buffer_empty(mock_serial_cls, mock_fcntl):
     rs = RealSerial(_make_serial_args())
     rs.send()  # buffer is empty
-    mock_serial_cls.return_value.write.assert_not_called()
 
 
+@patch("fcntl.fcntl")
+@patch("os.write")
 @patch("serial.Serial")
-def test_send_zero_write_does_not_consume_buffer(mock_serial_cls):
-    """If write() returns 0, buffer should not advance."""
+def test_send_zero_write_does_not_consume_buffer(mock_serial_cls, mock_os_write, mock_fcntl):
+    """If os.write returns 0, buffer should not advance."""
     mock_fp = mock_serial_cls.return_value
-    mock_fp.write.return_value = 0
+    mock_fp.fileno.return_value = 7
+    mock_os_write.return_value = 0
 
     rs = RealSerial(_make_serial_args())
     rs.put(b"ABC")
@@ -125,8 +204,9 @@ def test_send_zero_write_does_not_consume_buffer(mock_serial_cls):
 
 # ── get() ────────────────────────────────────────────────────────────
 
+@patch("fcntl.fcntl")
 @patch("serial.Serial")
-def test_get_returns_data(mock_serial_cls):
+def test_get_returns_data(mock_serial_cls, mock_fcntl):
     mock_fp = mock_serial_cls.return_value
     mock_fp.read.return_value = b"hello"
 
@@ -137,8 +217,9 @@ def test_get_returns_data(mock_serial_cls):
     assert result == b"hello"
 
 
+@patch("fcntl.fcntl")
 @patch("serial.Serial")
-def test_get_eof_closes_port(mock_serial_cls):
+def test_get_eof_closes_port(mock_serial_cls, mock_fcntl):
     mock_fp = mock_serial_cls.return_value
     mock_fp.read.return_value = b""
 
@@ -150,8 +231,9 @@ def test_get_eof_closes_port(mock_serial_cls):
     assert rs.fp is None
 
 
+@patch("fcntl.fcntl")
 @patch("serial.Serial")
-def test_get_handles_serial_exception(mock_serial_cls):
+def test_get_handles_serial_exception(mock_serial_cls, mock_fcntl):
     mock_fp = mock_serial_cls.return_value
     mock_fp.read.side_effect = serial.serialutil.SerialException("read error")
 
@@ -163,8 +245,9 @@ def test_get_handles_serial_exception(mock_serial_cls):
     assert rs.fp is None
 
 
+@patch("fcntl.fcntl")
 @patch("serial.Serial")
-def test_get_with_n_le_zero_returns_empty(mock_serial_cls):
+def test_get_with_n_le_zero_returns_empty(mock_serial_cls, mock_fcntl):
     rs = RealSerial(_make_serial_args())
     assert rs.get(0) == b""
     assert rs.get(-1) == b""
@@ -173,8 +256,9 @@ def test_get_with_n_le_zero_returns_empty(mock_serial_cls):
 
 # ── nAvailable() ─────────────────────────────────────────────────────
 
+@patch("fcntl.fcntl")
 @patch("serial.Serial")
-def test_nAvailable_returns_in_waiting(mock_serial_cls):
+def test_nAvailable_returns_in_waiting(mock_serial_cls, mock_fcntl):
     mock_fp = mock_serial_cls.return_value
     mock_fp.in_waiting = 42
 
@@ -182,8 +266,9 @@ def test_nAvailable_returns_in_waiting(mock_serial_cls):
     assert rs.nAvailable() == 42
 
 
+@patch("fcntl.fcntl")
 @patch("serial.Serial")
-def test_nAvailable_returns_zero_when_no_port(mock_serial_cls):
+def test_nAvailable_returns_zero_when_no_port(mock_serial_cls, mock_fcntl):
     rs = RealSerial(_make_serial_args())
     rs.fp = None
     assert rs.nAvailable() == 0
@@ -191,8 +276,9 @@ def test_nAvailable_returns_zero_when_no_port(mock_serial_cls):
 
 # ── close() ──────────────────────────────────────────────────────────
 
+@patch("fcntl.fcntl")
 @patch("serial.Serial")
-def test_close_closes_port_and_sets_fp_none(mock_serial_cls):
+def test_close_closes_port_and_sets_fp_none(mock_serial_cls, mock_fcntl):
     mock_fp = mock_serial_cls.return_value
     rs = RealSerial(_make_serial_args())
 
@@ -203,8 +289,9 @@ def test_close_closes_port_and_sets_fp_none(mock_serial_cls):
     assert rs.fp is None
 
 
+@patch("fcntl.fcntl")
 @patch("serial.Serial")
-def test_close_idempotent(mock_serial_cls):
+def test_close_idempotent(mock_serial_cls, mock_fcntl):
     mock_fp = mock_serial_cls.return_value
     rs = RealSerial(_make_serial_args())
 
@@ -217,8 +304,9 @@ def test_close_idempotent(mock_serial_cls):
 
 # ── outputFileno() ───────────────────────────────────────────────────
 
+@patch("fcntl.fcntl")
 @patch("serial.Serial")
-def test_outputFileno_returns_port_when_buffer_exists(mock_serial_cls):
+def test_outputFileno_returns_port_when_buffer_exists(mock_serial_cls, mock_fcntl):
     mock_fp = mock_serial_cls.return_value
     rs = RealSerial(_make_serial_args())
     rs.put(b"data")
@@ -226,7 +314,8 @@ def test_outputFileno_returns_port_when_buffer_exists(mock_serial_cls):
     assert rs.outputFileno() is mock_fp
 
 
+@patch("fcntl.fcntl")
 @patch("serial.Serial")
-def test_outputFileno_returns_none_when_buffer_empty(mock_serial_cls):
+def test_outputFileno_returns_none_when_buffer_empty(mock_serial_cls, mock_fcntl):
     rs = RealSerial(_make_serial_args())
     assert rs.outputFileno() is None

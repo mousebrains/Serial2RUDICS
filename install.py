@@ -33,6 +33,7 @@ def substitute_template(content: str, args: Namespace, root: str) -> str:
     content = content.replace("@BAUDRATE@", str(args.baudrate))
     content = content.replace("@TIMEOUT@", str(args.timeout))
     content = content.replace("@RESTARTSECONDS@", str(args.restartSeconds))
+    content = content.replace("@MEMORYMAX@", args.memoryMax)
     return content
 
 def validate_args(args: Namespace) -> None:
@@ -43,6 +44,8 @@ def validate_args(args: Namespace) -> None:
         raise SystemExit(f"--timeout must be positive, got {args.timeout}")
     if args.restartSeconds < 1:
         raise SystemExit(f"--restartSeconds must be positive, got {args.restartSeconds}")
+    if not args.memoryMax:
+        raise SystemExit("--memoryMax must be a non-empty systemd memory value (e.g. 128M)")
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -62,6 +65,8 @@ if __name__ == "__main__":
     grp.add_argument("--directory", type=str, help="Directory to change to for running the service")
     grp.add_argument("--restartSeconds", type=int, default=60,
             help="Time before restarting the service after the previous instance exits")
+    grp.add_argument("--memoryMax", type=str, default="128M",
+            help="systemd MemoryMax= value per service (default 128M; lower if running many ports on tight RAM)")
     grp.add_argument("--executable", type=str, default="serial2RUDICS.py",
             help="Executable name to be executed by service")
     parser.add_argument("--force", action="store_true", help="Force writing a new file")

@@ -15,6 +15,7 @@ def _install_args(**overrides):  # type: ignore[no-untyped-def]
         executable="serial2RUDICS.py",
         hostname="example.host.edu", port=6565,
         baudrate=115200, timeout=3600, restartSeconds=60,
+        memoryMax="128M",
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -101,3 +102,15 @@ def test_validate_args_rejects_negative_timeout():
 def test_validate_args_rejects_negative_restart():
     with pytest.raises(SystemExit, match="--restartSeconds"):
         validate_args(_install_args(restartSeconds=-1))
+
+
+def test_validate_args_rejects_empty_memoryMax():
+    with pytest.raises(SystemExit, match="--memoryMax"):
+        validate_args(_install_args(memoryMax=""))
+
+
+def test_substitute_template_includes_memoryMax():
+    """@MEMORYMAX@ marker is substituted with the configured value."""
+    template = "MemoryMax=@MEMORYMAX@"
+    content = substitute_template(template, _install_args(memoryMax="96M"), "/opt/bin")
+    assert content == "MemoryMax=96M"

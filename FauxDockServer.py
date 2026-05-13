@@ -13,8 +13,6 @@ import select
 from io import FileIO, BufferedWriter
 from typing import Any
 
-fauxDS = None
-
 def addArgs(parser: argparse.ArgumentParser) -> None:
     ''' Add my command line arguments '''
     grp = parser.add_mutually_exclusive_group(required=True)
@@ -28,15 +26,17 @@ def addArgs(parser: argparse.ArgumentParser) -> None:
             help='When --simDS is specified, where should simulated dockserver output go')
 
 def setup(args: argparse.Namespace) -> argparse.Namespace:
-    ''' Return the args namespace, starting a faux dockserver thread if needed '''
-    global fauxDS
+    ''' Return the args namespace, starting a faux dockserver thread if needed.
 
+    The created daemon thread is kept alive by threading._active; no external
+    reference is required.
+    '''
     if args.host is not None:
         return args
-    fauxDS = FauxDS(args)
-    fauxDS.start()
-    args.host = fauxDS.host
-    args.port = fauxDS.port
+    instance = FauxDS(args)
+    instance.start()
+    args.host = instance.host
+    args.port = instance.port
     return args
 
 class FauxDS(threading.Thread):
@@ -119,10 +119,10 @@ class FauxDS(threading.Thread):
                     if fp == ofp:
                         n = ofp.write(toFile)
                         ofp.flush()
-                        toFile = toFile[n:]
+                        del toFile[:n]
                     elif conn is not None:
                         n = conn.send(toSocket)
-                        toSocket = toSocket[n:]
+                        del toSocket[:n]
         finally:
             if ifp is not None:
                 ifp.close()

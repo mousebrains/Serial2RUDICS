@@ -110,8 +110,6 @@ def test_setup_with_input_returns_pty_path(tmp_path):
     ofn.write_bytes(b"")
 
     args = make_args(input=str(ifn), output=str(ofn))
-    # Reset global state so setup() creates a new FauxSerial
-    FauxSerial.fauxSerial = None
     port = FauxSerial.setup(args)
 
     assert isinstance(port, str)
@@ -122,7 +120,6 @@ def test_setup_with_serial_returns_device_directly():
     """setup() with --serial returns the serial device path unchanged."""
     device = "/dev/ttyUSB0"
     args = make_args(serial=device)
-    FauxSerial.fauxSerial = None
     port = FauxSerial.setup(args)
 
     assert port == device

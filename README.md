@@ -43,6 +43,42 @@ To see all the command line options use:
 
 serial2RUDICS.py --help
 
+## Operation
+
+Each USB serial device gets its own systemd template instance (e.g. `USBToRUDICS@ttyUSB0.service`). The udev rule starts/stops them as USB-serial devices are plugged in.
+
+### Viewing logs
+
+```
+journalctl -u USBToRUDICS@ttyUSB0.service -f       # live log via syslog
+tail -f ~/logs/ttyUSB0.log                         # per-port rotating log
+sudo systemctl status 'USBToRUDICS@ttyUSB*'        # all instances
+```
+
+### Notable flags
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `--host`, `--port` | — / 6565 | Dockserver RUDICS endpoint |
+| `--serial` | — | Serial device, e.g. `/dev/ttyUSB0` |
+| `--baudrate` | 115200 | Serial baudrate |
+| `--idleTimeout` | 3600 | Drop RUDICS after this many idle seconds |
+| `--rudicsBaudrate` | (unset) | Optional outbound rate limit toward RUDICS |
+| `--rudicsMaxOpenTime` | 86400 | Force a reconnect after this many seconds |
+| `--triggerOn`, `--triggerOff` | (defaults) | Regex patterns over serial output that open/close the RUDICS session |
+| `--maxBuffer` | 10485760 | Bytes buffered while waiting for RUDICS; lower for tight-RAM hosts |
+| `--binary` | (unset) | Dump every chunk in both directions to this file (heavy SD I/O) |
+| `--disconnected` | False | Start with RUDICS disconnected, wait for `triggerOn` |
+
+### Trigger / suppression behavior
+
+Default triggers open RUDICS on `surface_<n>: ... Picking iridium or freewave` or `abort_the_mission`, and close it on `surface_<n>: ... Waiting for final gps fix`. Custom patterns are appendable via repeated `--triggerOn`/`--triggerOff`.
+
+Trigger matching is suppressed during file transfers to avoid spurious closes:
+- Lines that contain non-text bytes (zmodem framing)
+- After a `type` or `cat` command at a `GliderDos` prompt, until `LOG FILE CLOSED` or the next `GliderDos` prompt
+- Within 30 seconds of any binary data on the wire (active zmodem session)
+
 ## Notes
 
 This is a Python 3 program. It has been tested on Raspberry Pi OS (Debian Trixie) running Python 3.13.

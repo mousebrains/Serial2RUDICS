@@ -8,40 +8,13 @@ import time
 import threading
 import socket
 import types
-import select as _select_mod
-import logging as _logging_mod
 
 from RUDICS import RUDICS
 from RealSerial import RealSerial
 import FauxSerial
 import FauxDockServer
+from serial2RUDICS import doit as _raw_doit
 from tests.conftest import make_args
-
-# serial2RUDICS.py has module-level code that calls parse_args() and doit(),
-# so we cannot import it normally.  Extract just the doit() function from
-# the source text.
-_s2r_path = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "serial2RUDICS.py",
-)
-with open(_s2r_path) as _f:
-    _lines = _f.readlines()
-
-_start = None
-_end = None
-for _i, _line in enumerate(_lines):
-    if _line.startswith("def doit("):
-        _start = _i
-    elif _start is not None and _i > _start:
-        # First non-blank line that is NOT indented marks end of function
-        if _line.strip() and not _line[0].isspace():
-            _end = _i
-            break
-
-_func_source = "".join(_lines[_start:_end])
-_ns: dict = {"select": _select_mod, "logging": _logging_mod}
-exec(compile(_func_source, _s2r_path, "exec"), _ns)  # noqa: S102
-_raw_doit = _ns["doit"]
 
 
 def doit(serial, rudics, binary=None):
@@ -84,7 +57,6 @@ def _make_faux_serial(tmp_path, mlg_bytes):
     mlg_file = tmp_path / "input.mlg"
     mlg_file.write_bytes(mlg_bytes)
     args = make_args(input=str(mlg_file), output="/dev/null")
-    FauxSerial.fauxSerial = None
     pty_path = FauxSerial.setup(args)
     args.serial = pty_path
     return args
@@ -225,7 +197,7 @@ def test_idle_timeout_disconnects():
         args = make_args(idleTimeout=2, rudicsMaxOpenTime=86400)
         rudics = RUDICS(args)
         rudics.s = a
-        now = time.time()
+        now = time.monotonic()
         rudics.tLastOpen = now - 3  # Opened 3 seconds ago
         rudics.tLastAction = now - 3  # Last activity 3 seconds ago, timeout is 2
 
@@ -283,7 +255,7 @@ def test_max_open_time_forces_disconnect():
         rudics = RUDICS(args)
         rudics.s = a
         rudics.qWantOpen = True
-        now = time.time()
+        now = time.monotonic()
         rudics.tLastOpen = now - 3  # Open for 3s, max is 2s
         rudics.tLastAction = now    # Recent activity so idle timeout won't fire
 

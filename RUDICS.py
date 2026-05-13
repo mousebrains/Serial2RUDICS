@@ -11,12 +11,15 @@ import math
 import socket
 from RealSerial import baudrates
 
-MAX_BUFFER_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_BUFFER_SIZE = 10 * 1024 * 1024  # 10 MB (default; override via --maxBuffer)
 MAX_LINE_SIZE = 1024 * 1024  # 1 MB
 BINARY_SESSION_SECS = 30.0  # How long after last binary data to consider zmodem session over
 
 # Bytes considered normal text: TAB, LF, CR, and printable ASCII (0x20-0x7E)
 _TEXT_BYTES = frozenset({0x09, 0x0A, 0x0D} | set(range(0x20, 0x7F)))
+# Deletion set for bytes.translate-based binary detection (~50-100x faster
+# than a Python-level loop on multi-KB chunks).
+_TEXT_BYTES_AS_BYTES = bytes(sorted(_TEXT_BYTES))
 
 # Patterns for detecting file display and GliderDos context
 _TYPE_CAT_CMD = re.compile(rb'>\s*(?:type|cat)\s+\S+', re.IGNORECASE)
@@ -51,8 +54,13 @@ class RUDICS:
         self.tLastSerialAction: float = 0  # Last time serial data was received via put()
         self.qWantOpen = not args.disconnected # Initially connection state
         self.s: socket.socket | None = None
-        self.tLastBinary: float = 0  # Time of last binary data seen (zmodem transfer)
+        # Init to -inf so _inBinarySession returns False before any binary
+        # bytes are seen. (time.monotonic() at process start is small, so a
+        # naive 0 sentinel would falsely flag the first 30s as in-session.)
+        self.tLastBinary: float = float('-inf')
         self.qTypeCat: bool = False  # Suppression flag for type/cat file display
+        self.qConnecting: bool = False  # Non-blocking connect in progress
+        self.tConnectStarted: float = 0  # When non-blocking connect was initiated
 
     @staticmethod
     def addArgs(parser: argparse.ArgumentParser) -> None:
@@ -78,16 +86,12 @@ class RUDICS:
                 help="Time after a forced RUDICS disconnect until reopening")
         grp.add_argument('--connectTimeout', type=float, default=10,
                 help="Timeout in seconds for connecting to the RUDICS port")
+        grp.add_argument('--maxBuffer', type=int, default=MAX_BUFFER_SIZE,
+                help='Max bytes buffered while waiting to send to RUDICS '
+                     '(lower on tight-memory hosts like Pi 3B running 10 ports)')
 
         grp.add_argument('--disconnected', action='store_true',
                 help='Should the initial state be disconnected?')
-
-    def __del__(self) -> None: # Destructor
-        try:
-            logging.info('Destroying RUDICS')
-            self.close()
-        except Exception:
-            pass
 
     def __bool__(self) -> bool:
         return (self.s is not None) or self.qWantOpen
@@ -103,7 +107,7 @@ class RUDICS:
         return re.compile(a.encode(), re.IGNORECASE)
 
     def timeout(self) -> float:
-        now = time.time()
+        now = time.monotonic()
         idle_timeout: float = self.args.idleTimeout
         max_open_time: float = self.args.rudicsMaxOpenTime
 
@@ -115,6 +119,11 @@ class RUDICS:
             dt = min(dt, max(1.0, max_open_time - (now - self.tLastOpen)))
         else:
             dt = max(1.0, idle_timeout)
+
+        # While connecting, wake up at the connect deadline so timedOut can abort.
+        if self.qConnecting:
+            remaining = self.args.connectTimeout - (now - self.tConnectStarted)
+            dt = min(dt, max(0.1, remaining))
 
         # Wake up at tNextOpen to retry connection even if buffer is empty
         if self.qWantOpen and self.s is None and self.tNextOpen > now:
@@ -132,9 +141,19 @@ class RUDICS:
         return dt
 
     def timedOut(self) -> None:
+        # Abort a non-blocking connect that overran its budget so the main
+        # select loop never blocks past connectTimeout.
+        if self.qConnecting:
+            now = time.monotonic()
+            if (now - self.tConnectStarted) >= self.args.connectTimeout:
+                logging.warning('Connect timeout to %s:%s, retry in %s seconds',
+                        self.args.host, self.args.port, self.args.rudicsDelay)
+                self._abandonConnect()
+            return
+
         if self.tLastOpen <= 0:
             return
-        now = time.time()
+        now = time.monotonic()
 
         # Enforce max open time
         if (now - self.tLastOpen) >= self.args.rudicsMaxOpenTime:
@@ -151,8 +170,14 @@ class RUDICS:
             self.close()
 
     def send(self) -> None:
+        # Writability on the socket during qConnecting is the kernel's
+        # "connect complete" signal; finalize/abandon before any data flow.
+        if self.qConnecting:
+            self._checkConnect()
+            return
+
         logging.debug('RUDICS:send %s', len(self.buffer))
-        now = time.time()
+        now = time.monotonic()
 
         if (self.s is None) or (not self.buffer) or (self.tNextSend >= now):
             return
@@ -173,29 +198,28 @@ class RUDICS:
 
         logging.debug('RUDICS:sent m=%s n=%s remaining=%s', m, n, len(self.buffer))
 
-        self.buffer = self.buffer[m:]
-
         if m > 0:
+            del self.buffer[:m]
             self.tLastSend = now
 
     @staticmethod
     def _hasBinaryData(data: bytes | bytearray) -> bool:
         """Check if data contains non-text bytes indicating a file transfer."""
-        return any(b not in _TEXT_BYTES for b in data)
+        return bool(bytes(data).translate(None, _TEXT_BYTES_AS_BYTES))
 
     def _inBinarySession(self) -> bool:
         """True if binary data was recently seen, indicating an active zmodem session."""
-        return (time.time() - self.tLastBinary) < BINARY_SESSION_SECS
+        return (time.monotonic() - self.tLastBinary) < BINARY_SESSION_SECS
 
     def put(self, c: bytes) -> None:
-        now = time.time()
+        now = time.monotonic()
         self.tLastAction = now
         self.tLastSerialAction = now
         wasOpen = self.qWantOpen
 
         # Track binary data for zmodem session detection
         if self._hasBinaryData(c):
-            self.tLastBinary = time.time()
+            self.tLastBinary = time.monotonic()
 
         self.line += c
 
@@ -259,13 +283,18 @@ class RUDICS:
 
         # Buffer data after trigger detection so trigger-on chunks are captured
         if wasOpen or self.qWantOpen:
-            if len(self.buffer) < MAX_BUFFER_SIZE:
+            if len(self.buffer) < self.args.maxBuffer:
                 self.buffer += c
             else:
                 logging.warning('Buffer full (%s bytes), discarding %s bytes',
                         len(self.buffer), len(c))
 
     def get(self, n: int) -> bytes:
+        # Readability on the socket during qConnecting indicates either
+        # error or a fast-path connect+payload; route through _checkConnect.
+        if self.qConnecting:
+            self._checkConnect()
+            return b''
         c = self.read(n)
         if not c and self.s is not None: # Connection dropped, not already handled by read()
             tOpen = self.tLastOpen
@@ -273,18 +302,22 @@ class RUDICS:
             # Only reconnect if serial was active during this connection
             if tOpen > 0 and self.tLastSerialAction >= tOpen:
                 self.qWantOpen = True
-        logging.info('get n=%s len=%s', n, len(c))
+        logging.debug('get n=%s len=%s', n, len(c))
         return c
 
     def inputFileno(self) -> socket.socket | None:
-        if self.qWantOpen and (self.s is None):
+        if self.qWantOpen and (self.s is None) and not self.qConnecting:
             self.open()
         return self.s
 
     def outputFileno(self) -> socket.socket | None:
-        if self.qWantOpen and (self.s is None):
+        if self.qWantOpen and (self.s is None) and not self.qConnecting:
             self.open()
-        return self.s if self.buffer and (time.time() >= self.tNextSend) else None
+        # During qConnecting we want select to wake on writability so
+        # _checkConnect can finalize/abandon the connect.
+        if self.qConnecting:
+            return self.s
+        return self.s if self.buffer and (time.monotonic() >= self.tNextSend) else None
 
     def write(self, buffer: bytes | bytearray) -> int:
         try:
@@ -311,10 +344,18 @@ class RUDICS:
     def close(self) -> None:
         self.qWantOpen = False # I don't want to be open
         self.qTypeCat = False  # Clear type/cat suppression on disconnect
+        self.qConnecting = False  # Cancel any in-flight connect
         if self.s is None:
             return
 
         try:
+            # Half-close the write side so the kernel flushes queued bytes
+            # and sends FIN to the dockserver, instead of dropping them on
+            # a bare close().
+            try:
+                self.s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass # Peer may already be gone; close still releases the fd
             self.s.close() # Free up resources
             logging.info('Closed %s:%s', self.args.host, self.args.port)
         except Exception:
@@ -322,15 +363,17 @@ class RUDICS:
 
         self.s = None
         self.tLastOpen = 0
-        now = time.time()
+        now = time.monotonic()
         self.tLastClose = now
         self.tNextOpen = max(self.tNextOpen, now + self.args.rudicsSpacing)
 
     def open(self) -> None:
-        if self.s is not None: # Already open
+        if self.s is not None: # Already open or already connecting
+            return
+        if self.qConnecting:
             return
 
-        if time.time() < self.tNextOpen: # Don't open yet
+        if time.monotonic() < self.tNextOpen: # Don't open yet
             self.qWantOpen = True # We want to be open
             return
 
@@ -338,20 +381,75 @@ class RUDICS:
         s = None
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(args.connectTimeout) # Bounded connect timeout
-            s.connect((args.host, args.port)) # Connect to RUDICS listener on a Dockserver
-            s.settimeout(None) # Blocking for normal I/O
-            logging.info('Connected to %s:%s', args.host, args.port)
-            self.s = s
-            self.tLastOpen = time.time()
-            self.qWantOpen = True # I'm now open
-        except Exception:
+            s.setblocking(False) # Non-blocking connect; never stalls the main loop
+            try:
+                s.connect((args.host, args.port))
+            except BlockingIOError:
+                # Linux: connect always reports EINPROGRESS on a non-blocking
+                # socket; completion arrives later as socket writability.
+                self.s = s
+                self.qConnecting = True
+                self.tConnectStarted = time.monotonic()
+                self.qWantOpen = True
+                logging.info('Connecting to %s:%s', args.host, args.port)
+                return
+            # Immediate completion (e.g. localhost): finalize now.
+            self._finalizeConnect(s)
+        except OSError:
             if s is not None:
                 try:
                     s.close()
                 except Exception:
                     pass
-            self.tNextOpen = time.time() + args.rudicsDelay
-            self.qWantOpen = True # We want to be open
+            self.tNextOpen = time.monotonic() + args.rudicsDelay
+            self.qWantOpen = True
             logging.exception('Unexpected error connecting to %s:%s, wait %s seconds to retry',
                     args.host, args.port, args.rudicsDelay)
+
+    def _finalizeConnect(self, s: socket.socket) -> None:
+        """Apply TCP options and transition from connecting to open."""
+        s.setblocking(True) # Back to blocking; select drives I/O readiness
+        # Disable Nagle: small serial-fragment writes should hit the
+        # wire immediately to honor the 100ms serial->RUDICS budget.
+        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        # Keepalive so a half-open connection (NAT drop, dead server) is
+        # detected within ~150s instead of waiting for idleTimeout.
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        if hasattr(socket, 'TCP_KEEPIDLE'):
+            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
+        if hasattr(socket, 'TCP_KEEPINTVL'):
+            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 30)
+        if hasattr(socket, 'TCP_KEEPCNT'):
+            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+        self.s = s
+        self.qConnecting = False
+        self.tLastOpen = time.monotonic()
+        self.qWantOpen = True
+        logging.info('Connected to %s:%s', self.args.host, self.args.port)
+
+    def _abandonConnect(self) -> None:
+        """Tear down an in-progress connect and schedule a retry."""
+        if self.s is not None:
+            try:
+                self.s.close()
+            except Exception:
+                pass
+            self.s = None
+        self.qConnecting = False
+        self.tNextOpen = time.monotonic() + self.args.rudicsDelay
+        self.qWantOpen = True
+
+    def _checkConnect(self) -> None:
+        """Resolve an in-flight non-blocking connect via SO_ERROR."""
+        if not self.qConnecting or self.s is None:
+            return
+        try:
+            err = self.s.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+        except OSError as e:
+            err = e.errno or -1
+        if err == 0:
+            self._finalizeConnect(self.s)
+        else:
+            logging.warning('Connect failed to %s:%s: errno %s, retry in %s seconds',
+                    self.args.host, self.args.port, err, self.args.rudicsDelay)
+            self._abandonConnect()

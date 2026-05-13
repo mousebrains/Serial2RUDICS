@@ -4,10 +4,18 @@
 # Jan-2020, Pat Welch, pat@mousebrains.com
 
 import argparse
+import fcntl
 import logging
+import os
 import serial
 
 baudrates = serial.Serial.BAUDRATES
+
+# Bytes per write attempt. With O_NONBLOCK and select-driven I/O the
+# kernel writes what fits in its TTY buffer and returns the partial count;
+# the rest waits for the next select wakeup. 4096 is the typical Linux
+# TTY buffer size, so a single os.write usually drains everything pending.
+WRITE_CHUNK_BYTES = 4096
 
 class RealSerial:
     def __init__(self, args: argparse.Namespace) -> None:
@@ -29,13 +37,6 @@ class RealSerial:
         grp.add_argument('--stopbits', type=float, choices=serial.Serial.STOPBITS,
                 default=1, help='Number of stop bits')
 
-    def __del__(self) -> None: # Destructor
-        try:
-            logging.info('Destroying Serial %s', getattr(self, 'port', '?'))
-            self.close()
-        except Exception:
-            pass
-
     def __bool__(self) -> bool:
         return (self.fp is not None) or bool(self.buffer)
 
@@ -46,10 +47,18 @@ class RealSerial:
         return self.fp if self.buffer else None
 
     def send(self) -> None:
-        if (self.fp is not None) and self.buffer:
-            n = self.fp.write(self.buffer[:1]) # 1 at a time to not overload
-            if n is not None and n > 0:
-                self.buffer = self.buffer[n:]
+        if (self.fp is None) or (not self.buffer):
+            return
+        try:
+            n = os.write(self.fp.fileno(), bytes(self.buffer[:WRITE_CHUNK_BYTES]))
+        except BlockingIOError:
+            return # Kernel TTY buffer full; retry on next select wakeup
+        except OSError:
+            logging.exception('Error writing serial port %s', self.port)
+            self.close()
+            return
+        if n > 0:
+            del self.buffer[:n]
 
     def put(self, c: bytes) -> None:
         self.buffer += c
@@ -80,6 +89,11 @@ class RealSerial:
         try:
             fp = serial.Serial(port=self.port, baudrate=args.baudrate,
                     bytesize=args.bytesize, parity=args.parity, stopbits=args.stopbits)
+            # Non-blocking writes: os.write returns partial counts immediately
+            # instead of blocking on a slow baudrate. Required to honor the
+            # 100ms serial->RUDICS latency budget shared with the reverse path.
+            flags = fcntl.fcntl(fp.fileno(), fcntl.F_GETFL)
+            fcntl.fcntl(fp.fileno(), fcntl.F_SETFL, flags | os.O_NONBLOCK)
             self.fp = fp
             logging.info('Opened serial port %s parity=%s baudrate=%s bytesize=%s stopbits=%s',
                 args.serial, args.parity, args.baudrate, args.bytesize, args.stopbits)

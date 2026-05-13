@@ -94,34 +94,39 @@ def doit(serial: RealSerial, rudics: RUDICS, binary: str | None = None) -> None:
         if ofp:
             ofp.close()
 
-parser = argparse.ArgumentParser(description="Simulate a RUDICS connection for a Slocum simulator")
-MyLogger.addArgs(parser)
-FauxSerial.addArgs(parser)
-RealSerial.addArgs(parser)
-FauxDockServer.addArgs(parser)
-RUDICS.addArgs(parser)
-parser.add_argument("--binary", type=str, help="Binary output filename")
-args = parser.parse_args()
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Simulate a RUDICS connection for a Slocum simulator")
+    MyLogger.addArgs(parser)
+    FauxSerial.addArgs(parser)
+    RealSerial.addArgs(parser)
+    FauxDockServer.addArgs(parser)
+    RUDICS.addArgs(parser)
+    parser.add_argument("--binary", type=str, help="Binary output filename")
+    args = parser.parse_args()
 
-MyLogger.mkLogger(args)
-logging.info('args=%s', args)
+    MyLogger.mkLogger(args)
+    logging.info('args=%s', args)
 
-tty = None
-rudics = None
+    tty = None
+    rudics = None
 
-signal.signal(signal.SIGTERM, lambda _signum, _frame: sys.exit(0))
+    signal.signal(signal.SIGTERM, lambda _signum, _frame: sys.exit(0))
 
-try:
-    args.serial = FauxSerial.setup(args)
-    args = FauxDockServer.setup(args)
-    tty = RealSerial(args) # Serial input/output
-    rudics = RUDICS(args)
-    doit(tty, rudics, args.binary)
-except Exception:
-    logging.exception('Unexpected exception')
-finally:
-    logging.info('Fell into finally')
-    if tty is not None:
-        tty.close()
-    if rudics is not None:
-        rudics.close()
+    try:
+        args.serial = FauxSerial.setup(args)
+        args = FauxDockServer.setup(args)
+        tty = RealSerial(args) # Serial input/output
+        rudics = RUDICS(args)
+        doit(tty, rudics, args.binary)
+    except Exception:
+        logging.exception('Unexpected exception')
+    finally:
+        logging.info('Fell into finally')
+        if tty is not None:
+            tty.close()
+        if rudics is not None:
+            rudics.close()
+
+
+if __name__ == "__main__":
+    main()
