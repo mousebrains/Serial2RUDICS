@@ -84,6 +84,10 @@ class RUDICS:
                 help="Maximum length of time a single RUDICS connection can be open")
         grp.add_argument('--rudicsMaxOpenTimeDelay', type=int, default=1800,
                 help="Time after a forced RUDICS disconnect until reopening")
+        grp.add_argument('--reconnectMaxSerialIdle', type=float, default=600,
+                help="Stop reconnecting if no serial data seen for this many seconds. "
+                     "Bounds connection flapping when the glider is silent. "
+                     "Set longer than the SFMC server-side idle reaper (~5 min).")
         grp.add_argument('--connectTimeout', type=float, default=10,
                 help="Timeout in seconds for connecting to the RUDICS port")
         grp.add_argument('--maxBuffer', type=int, default=MAX_BUFFER_SIZE,
@@ -297,11 +301,7 @@ class RUDICS:
             return b''
         c = self.read(n)
         if not c and self.s is not None: # Connection dropped, not already handled by read()
-            tOpen = self.tLastOpen
             self.close()
-            # Only reconnect if serial was active during this connection
-            if tOpen > 0 and self.tLastSerialAction >= tOpen:
-                self.qWantOpen = True
         logging.debug('get n=%s len=%s', n, len(c))
         return c
 
@@ -326,7 +326,6 @@ class RUDICS:
         except Exception:
             logging.exception('Exception while writing %d bytes', len(buffer))
             self.close()
-            self.qWantOpen = True
         return 0
 
     def read(self, n: int) -> bytes:
@@ -335,14 +334,18 @@ class RUDICS:
                 return self.s.recv(n)
         except Exception:
             logging.exception('Exception while receiving %s', n)
-            tOpen = self.tLastOpen
             self.close()
-            if tOpen > 0 and self.tLastSerialAction >= tOpen:
-                self.qWantOpen = True
         return b''
 
     def close(self) -> None:
-        self.qWantOpen = False # I don't want to be open
+        # qWantOpen is intent. triggerOn/triggerOff are the primary controls,
+        # but close() also demotes intent to False when serial has been silent
+        # for longer than reconnectMaxSerialIdle (or never seen) — that caps
+        # flapping when the glider stops talking, without losing reconnects
+        # during normal SFMC ~5-min idle reaps.
+        if self.tLastSerialAction <= 0 or \
+                (time.monotonic() - self.tLastSerialAction) > self.args.reconnectMaxSerialIdle:
+            self.qWantOpen = False
         self.qTypeCat = False  # Clear type/cat suppression on disconnect
         self.qConnecting = False  # Cancel any in-flight connect
         if self.s is None:

@@ -57,10 +57,7 @@ def doit(serial: RealSerial, rudics: RUDICS, binary: str | None = None) -> None:
                     serial.close() # Exception on the serial side
                 else: # exception on the RUDICS side
                     logging.warning('Select exception for RUDICS connection')
-                    tOpen = rudics.tLastOpen
-                    rudics.close()
-                    if tOpen > 0 and rudics.tLastSerialAction >= tOpen:
-                        rudics.qWantOpen = True # Reconnect — serial was active
+                    rudics.close() # qWantOpen stays as-is; main loop will redial
 
             if exceptable:
                 continue # Skip reading/writing this time if there are exceptions

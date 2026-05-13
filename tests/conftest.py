@@ -82,6 +82,7 @@ def make_args(**overrides) -> argparse.Namespace:
         "rudicsDelay": 1,
         "rudicsMaxOpenTime": 60,
         "rudicsMaxOpenTimeDelay": 1,
+        "reconnectMaxSerialIdle": 600,
         "connectTimeout": 2,
         "maxBuffer": 10 * 1024 * 1024,
         "disconnected": False,

@@ -163,7 +163,7 @@ def test_abort_triggers_connection(tmp_path):
 
 @pytest.mark.integration
 def test_reconnect_after_server_drop():
-    """When the socket is closed externally, qWantOpen stays True."""
+    """With recent serial activity, a server drop keeps qWantOpen True for redial."""
     ds_args = make_args(simDS=True)
     ds = FauxDockServer.FauxDS(ds_args)
     ds.start()
@@ -173,20 +173,18 @@ def test_reconnect_after_server_drop():
         port=ds.port,
         disconnected=False,
         rudicsSpacing=0.1,
+        reconnectMaxSerialIdle=600,
     )
     rudics = RUDICS(args)
     rudics.open()
     assert rudics.s is not None, "Failed to connect to FauxDS"
 
-    # Externally close the socket
-    rudics.s.close()
-    rudics.s = None
-    rudics.qWantOpen = True  # Simulate what get() does on empty recv
-
-    # qWantOpen should remain True (wants to reconnect)
+    # Simulate recent serial activity so the idle-threshold doesn't trip.
+    rudics.tLastSerialAction = time.monotonic()
     assert rudics.qWantOpen is True
-    assert rudics.s is None
     rudics.close()
+    assert rudics.s is None
+    assert rudics.qWantOpen is True
 
 
 @pytest.mark.integration
@@ -204,6 +202,8 @@ def test_idle_timeout_disconnects():
         rudics.timedOut()
 
         assert rudics.s is None, "Socket should have been closed on idle timeout"
+        # Idle timeout means no serial activity for an extended window, so
+        # close() demotes qWantOpen — we stop redialing into a quiet glider.
         assert rudics.qWantOpen is False
     finally:
         b.close()

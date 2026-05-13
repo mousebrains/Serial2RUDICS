@@ -274,6 +274,10 @@ class TestTimedOut:
             r.qWantOpen = True
             r.timedOut()
             assert r.s is None
+            # idleTimeout fires when there's been no serial activity for an
+            # extended period — close() then demotes intent because serial has
+            # been silent for > reconnectMaxSerialIdle (here, since program
+            # start: tLastSerialAction is still 0).
             assert r.qWantOpen is False
         finally:
             b.close()
@@ -411,6 +415,48 @@ class TestOpenClose:
 
 
 # ---------------------------------------------------------------------------
+# close() and the serial-idle threshold (reconnectMaxSerialIdle)
+# ---------------------------------------------------------------------------
+
+class TestCloseSerialIdleThreshold:
+    def test_close_preserves_intent_when_serial_recent(self):
+        """Serial seen within the threshold: close() leaves qWantOpen True."""
+        r = RUDICS(make_args(reconnectMaxSerialIdle=600))
+        r.qWantOpen = True
+        r.tLastSerialAction = time.monotonic() - 60  # 1 min ago, < 10 min threshold
+        r.close()
+        assert r.qWantOpen is True
+
+    def test_close_demotes_intent_when_serial_stale(self):
+        """Serial silent beyond the threshold: close() demotes qWantOpen to False."""
+        r = RUDICS(make_args(reconnectMaxSerialIdle=600))
+        r.qWantOpen = True
+        r.tLastSerialAction = time.monotonic() - 1200  # 20 min ago
+        r.close()
+        assert r.qWantOpen is False
+
+    def test_close_demotes_intent_when_serial_never_seen(self):
+        """Never seen serial (tLastSerialAction == 0): close() demotes to False.
+
+        This is the idle-USB-dongle case: plugged in, nothing talking, the
+        initial connection gets dropped by SFMC and we stop redialing.
+        """
+        r = RUDICS(make_args(reconnectMaxSerialIdle=600))
+        r.qWantOpen = True
+        assert r.tLastSerialAction == 0
+        r.close()
+        assert r.qWantOpen is False
+
+    def test_close_demotes_at_exact_threshold_boundary(self):
+        """A tick past the threshold is enough to demote (strict greater-than)."""
+        r = RUDICS(make_args(reconnectMaxSerialIdle=1))
+        r.qWantOpen = True
+        r.tLastSerialAction = time.monotonic() - 1.5
+        r.close()
+        assert r.qWantOpen is False
+
+
+# ---------------------------------------------------------------------------
 # __bool__ / fileno helpers
 # ---------------------------------------------------------------------------
 
@@ -461,35 +507,23 @@ class TestBoolFileno:
 # ---------------------------------------------------------------------------
 
 class TestWriteReadErrors:
-    def test_write_exception_closes_and_wants_reconnect(self):
-        """write() should close socket and set qWantOpen on exception."""
+    def test_write_exception_closes_socket(self):
+        """write() should close socket on exception."""
         a, b = socket.socketpair()
         b.close()  # Remote end closed
         r = RUDICS(make_args())
         r.s = a
         r.qWantOpen = True
+        r.tLastSerialAction = time.monotonic()  # Serial recently active
         a.close()  # Force exception on send
         result = r.write(b"hello")
         assert result == 0
         assert r.s is None
+        # Serial recent → close() preserves intent → main loop redials.
         assert r.qWantOpen is True
 
-    def test_read_exception_no_serial_activity_no_reconnect(self):
-        """read() exception without serial activity should not reconnect."""
-        a, b = socket.socketpair()
-        b.close()
-        r = RUDICS(make_args())
-        r.s = a
-        r.tLastOpen = time.monotonic()
-        r.qWantOpen = True
-        a.close()  # Force exception on recv
-        result = r.read(1024)
-        assert result == b''
-        assert r.s is None
-        assert r.qWantOpen is False
-
-    def test_read_exception_with_serial_activity_reconnects(self):
-        """read() exception with serial activity should reconnect."""
+    def test_read_exception_with_recent_serial_redials(self):
+        """read() exception with recent serial activity keeps intent for redial."""
         a, b = socket.socketpair()
         b.close()
         r = RUDICS(make_args())
@@ -503,33 +537,84 @@ class TestWriteReadErrors:
         assert r.s is None
         assert r.qWantOpen is True
 
-    def test_get_eof_no_serial_activity_no_reconnect(self):
-        """get() EOF without serial activity should not reconnect."""
+    def test_read_exception_with_stale_serial_stops(self):
+        """read() exception with no recent serial stops the reconnect cycle."""
+        a, b = socket.socketpair()
+        b.close()
+        r = RUDICS(make_args(reconnectMaxSerialIdle=5))
+        r.s = a
+        r.tLastOpen = time.monotonic()
+        r.tLastSerialAction = time.monotonic() - 100  # > threshold ago
+        r.qWantOpen = True
+        a.close()
+        result = r.read(1024)
+        assert result == b''
+        assert r.s is None
+        assert r.qWantOpen is False
+
+    def test_read_exception_preserves_qWantOpen_false(self):
+        """read() exception never flips qWantOpen on — only triggerOn does."""
+        a, b = socket.socketpair()
+        b.close()
+        r = RUDICS(make_args())
+        r.s = a
+        r.tLastOpen = time.monotonic()
+        r.tLastSerialAction = time.monotonic()  # Even with recent serial...
+        r.qWantOpen = False
+        a.close()
+        result = r.read(1024)
+        assert result == b''
+        assert r.s is None
+        # ...close() only demotes, never promotes.
+        assert r.qWantOpen is False
+
+    def test_get_eof_with_recent_serial_redials(self):
+        """get() EOF with recent serial keeps intent for redial.
+
+        The original SFMC 5-minute-idle-close scenario: server cleanly FINs,
+        recv() returns empty, we close — but serial is talking so we redial.
+        """
         a, b = socket.socketpair()
         r = RUDICS(make_args())
         r.s = a
         r.tLastOpen = time.monotonic()
+        r.tLastSerialAction = time.monotonic()
         r.qWantOpen = True
         b.close()  # Remote closes -> recv returns b''
+        c = r.get(1024)
+        assert c == b''
+        assert r.s is None
+        assert r.qWantOpen is True
+        a.close()
+
+    def test_get_eof_with_stale_serial_stops(self):
+        """get() EOF with no recent serial stops the reconnect cycle."""
+        a, b = socket.socketpair()
+        r = RUDICS(make_args(reconnectMaxSerialIdle=5))
+        r.s = a
+        r.tLastOpen = time.monotonic()
+        r.tLastSerialAction = time.monotonic() - 100  # > threshold ago
+        r.qWantOpen = True
+        b.close()
         c = r.get(1024)
         assert c == b''
         assert r.s is None
         assert r.qWantOpen is False
         a.close()
 
-    def test_get_eof_with_serial_activity_reconnects(self):
-        """get() EOF with serial activity should reconnect."""
+    def test_get_eof_preserves_qWantOpen_false(self):
+        """get() EOF never flips qWantOpen on — only triggerOn does."""
         a, b = socket.socketpair()
         r = RUDICS(make_args())
         r.s = a
         r.tLastOpen = time.monotonic()
         r.tLastSerialAction = time.monotonic()
-        r.qWantOpen = True
-        b.close()  # Remote closes -> recv returns b''
+        r.qWantOpen = False
+        b.close()
         c = r.get(1024)
         assert c == b''
         assert r.s is None
-        assert r.qWantOpen is True
+        assert r.qWantOpen is False
         a.close()
 
     def test_write_returns_zero_without_socket(self):
@@ -608,12 +693,12 @@ class TestCloseErrors:
             r = RUDICS(make_args())
             r.s = a
             r.tLastOpen = time.monotonic()
+            r.tLastSerialAction = time.monotonic()  # Recent serial → preserve intent
+            assert r.qWantOpen is True
             a.close()  # Pre-close so close() will raise
             r.close()
             assert r.s is None
-            assert r.qWantOpen is False
-        except Exception:
-            pass
+            assert r.qWantOpen is True
         finally:
             b.close()
 
