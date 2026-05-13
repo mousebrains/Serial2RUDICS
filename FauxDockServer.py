@@ -99,7 +99,7 @@ class FauxDS(threading.Thread):
                 (ifps, ofps, _) = select.select(inputs, outputs, [])
 
                 for fp in ifps:
-                    if fp == ifp: # File input
+                    if ifp is not None and fp is ifp: # File input
                         c = fp.read(1)
                         if c == b'': # EOF
                             ifp.close()
@@ -116,7 +116,7 @@ class FauxDS(threading.Thread):
                             toFile += c
 
                 for fp in ofps:
-                    if fp == ofp:
+                    if ofp is not None and fp is ofp:
                         n = ofp.write(toFile)
                         ofp.flush()
                         del toFile[:n]
