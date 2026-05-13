@@ -95,8 +95,14 @@ def _make_infrastructure(tmp_path, mlg_bytes, *, disconnected=True, **extra_args
 
 
 def _stop_doit_thread(t, tty, rudics, timeout=5.0):
-    """Gracefully stop a doit() thread by closing its I/O objects."""
+    """Gracefully stop a doit() thread by closing its I/O objects.
+
+    qWantOpen is sticky intent in production (only triggerOff or a stale-
+    serial close demotes it), so an external close() alone won't make the
+    main loop exit. Tests pre-clear intent before closing to signal shutdown.
+    """
     tty.close()
+    rudics.qWantOpen = False  # Signal shutdown so the main loop terminates
     rudics.close()
     t.join(timeout=timeout)
 
