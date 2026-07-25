@@ -1,6 +1,6 @@
-import sys
 import os
 import re
+import sys
 from argparse import Namespace
 
 import pytest
@@ -15,18 +15,18 @@ MARKER = re.compile(r"@[A-Z][A-Z0-9_]*@")
 
 
 def _install_args(**overrides):  # type: ignore[no-untyped-def]
-    defaults = dict(
-        username="testuser", group="dialout",
-        directory="/home/testuser/logs",
-        executable="serial2RUDICS.py",
-        hostname="example.host.edu", port=6565,
-        baudrate=115200, timeout=3600, restartSeconds=60,
-        memoryMax="128M",
-        tunnelProxy=None, tunnelLocalPort=16565,
-        tunnelKey="/home/testuser/.ssh/id_rudics",
-        tunnelService="rudics-tunnel.service", tunnelRestartSeconds=5,
-        ssh="/usr/bin/ssh",
-    )
+    defaults = {
+        "username": "testuser", "group": "dialout",
+        "directory": "/home/testuser/logs",
+        "executable": "serial2RUDICS.py",
+        "hostname": "example.host.edu", "port": 6565,
+        "baudrate": 115200, "timeout": 3600, "restartSeconds": 60,
+        "memoryMax": "128M",
+        "tunnelProxy": None, "tunnelLocalPort": 16565,
+        "tunnelKey": "/home/testuser/.ssh/id_rudics",
+        "tunnelService": "rudics-tunnel.service", "tunnelRestartSeconds": 5,
+        "ssh": "/usr/bin/ssh",
+    }
     defaults.update(overrides)
     return Namespace(**defaults)
 

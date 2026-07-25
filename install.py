@@ -4,12 +4,13 @@
 #
 # Jan-2023, Pat Welch, pat@mousebrains.com
 
-from argparse import ArgumentParser, Namespace
 import getpass
-import subprocess
-from tempfile import NamedTemporaryFile
 import os
+import subprocess
 import time
+from argparse import ArgumentParser, Namespace
+from tempfile import NamedTemporaryFile
+
 
 def barebones(content: str) -> list[str]:
     lines = []
@@ -190,8 +191,10 @@ if __name__ == "__main__":
                     if current == proposed:
                         print("No need to update, identical")
                         continue
-            except Exception:
-                pass
+            except OSError as e:
+                # Unreadable (e.g. root-owned, or gone since the exists check).
+                # Fall through and rewrite it rather than skipping the install.
+                print(f"Could not read {target} to compare ({e}), rewriting")
 
         if not os.path.isdir(os.path.dirname(target)):
             wd = os.path.dirname(target)

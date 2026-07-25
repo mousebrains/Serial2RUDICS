@@ -1,8 +1,6 @@
 pyserial>=3.5
 pytest>=8
 pytest-cov
-# Pinned: ruff 0.16 widened its default rule set (97 findings repo-wide,
-# mostly LOG015). Unpin once those are addressed or a rule set is configured.
-ruff<0.16
+ruff>=0.16
 mypy>=2
 types-pyserial
