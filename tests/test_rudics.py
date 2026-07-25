@@ -5,11 +5,18 @@ import select
 import socket
 import sys
 import time
+from unittest.mock import MagicMock
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from RUDICS import BINARY_SESSION_SECS, MAX_BUFFER_SIZE, MAX_LINE_SIZE, RUDICS
+from RUDICS import (
+    BINARY_SESSION_SECS,
+    MAX_BUFFER_SIZE,
+    MAX_LINE_SIZE,
+    RUDICS,
+    WRITE_CHUNK_BYTES,
+)
 from tests.conftest import make_args
 
 
@@ -940,15 +947,14 @@ def test_get_does_not_close_on_would_block():
 
 def test_write_is_capped_per_call():
     """One writable wakeup cannot spend unbounded time copying to the kernel."""
-    from RUDICS import WRITE_CHUNK_BYTES
+    # Asserting on the return value would be vacuous: a real socketpair's send
+    # buffer (8KB on macOS) bounds it below the cap either way, so the test
+    # would pass with the cap removed. Observe the slice handed to send().
+    r = RUDICS(make_args())
+    r.s = MagicMock()
+    r.s.send.return_value = WRITE_CHUNK_BYTES
 
-    a, b = socket.socketpair()
-    try:
-        a.setblocking(False)  # As _finalizeConnect leaves a real socket
-        r = RUDICS(make_args())
-        r.s = a
-        n = r.write(b'y' * (4 * WRITE_CHUNK_BYTES))
-        assert 0 < n <= WRITE_CHUNK_BYTES
-    finally:
-        a.close()
-        b.close()
+    r.write(b'y' * (4 * WRITE_CHUNK_BYTES))
+
+    (payload,), _ = r.s.send.call_args
+    assert len(payload) == WRITE_CHUNK_BYTES

@@ -1,6 +1,8 @@
 pyserial>=3.5
 pytest>=8
 pytest-cov
+# Fails a hung test instead of burning the whole CI job on it
+pytest-timeout
 ruff>=0.16
 mypy>=2
 types-pyserial

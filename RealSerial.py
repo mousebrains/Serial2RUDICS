@@ -64,6 +64,13 @@ class RealSerial:
             del self.buffer[:n]
 
     def put(self, c: bytes) -> None:
+        if self.fp is None:
+            # A closed port can never be written, and close() cannot clear the
+            # buffer a second time (it returns early on fp is None). Buffering
+            # here would make __bool__ true again with no drain path, which is
+            # exactly the wedge close() clears. doit() calls put() for every
+            # dockserver byte without checking whether the port is still open.
+            return
         # Bounded like RUDICS.put(): a wedged or slow TTY must not let the
         # dockserver->glider direction grow until the MemoryMax kill.
         if len(self.buffer) < self.args.maxBuffer:

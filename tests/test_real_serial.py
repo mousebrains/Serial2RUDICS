@@ -351,3 +351,21 @@ def test_put_is_bounded_by_max_buffer(mock_serial_cls, mock_fcntl):
 
     assert len(rs.buffer) == 1024
     assert b"b" not in rs.buffer
+
+
+@patch("fcntl.fcntl")
+@patch("serial.Serial")
+def test_put_after_close_does_not_rewedge(mock_serial_cls, mock_fcntl):
+    """doit() calls put() for every dockserver byte without checking the port.
+
+    Buffering those bytes would make __bool__ true again with no drain path,
+    and close() cannot clear it a second time (it returns early on fp None),
+    so the loop would wedge exactly as it did before close() learned to clear.
+    """
+    rs = RealSerial(_make_serial_args())
+    rs.close()
+
+    rs.put(b"data arriving from the dockserver after the port died")
+
+    assert rs.buffer == bytearray()
+    assert bool(rs) is False, "a closed port must stay falsy so doit() can exit"
