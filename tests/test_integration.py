@@ -104,9 +104,9 @@ def _make_infrastructure(tmp_path, mlg_bytes, *, disconnected=True, **extra_args
 def _stop_doit_thread(t, tty, rudics, timeout=5.0):
     """Gracefully stop a doit() thread by closing its I/O objects.
 
-    qWantOpen is sticky intent in production (only triggerOff or a stale-
-    serial close demotes it), so an external close() alone won't make the
-    main loop exit. Tests pre-clear intent before closing to signal shutdown.
+    qWantOpen is sticky intent in production -- only triggerOff lowers it --
+    so an external close() alone won't make the main loop exit. Tests
+    pre-clear intent before closing to signal shutdown.
     """
     tty.close()
     rudics.qWantOpen = False  # Signal shutdown so the main loop terminates
@@ -215,9 +215,10 @@ def test_idle_timeout_disconnects():
         rudics.timedOut()
 
         assert rudics.s is None, "Socket should have been closed on idle timeout"
-        # Idle timeout means no serial activity for an extended window, so
-        # close() demotes qWantOpen — we stop redialing into a quiet glider.
-        assert rudics.qWantOpen is False
+        # Intent survives: only triggerOff ends a surfacing. A quiet glider is
+        # redialed more slowly instead of being abandoned.
+        assert rudics.qWantOpen is True
+        assert rudics.reconnectBackoff > rudics.args.rudicsSpacing
     finally:
         b.close()
 

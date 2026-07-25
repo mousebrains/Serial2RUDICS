@@ -141,10 +141,19 @@ sudo systemctl status 'USBToRUDICS@ttyUSB*'        # all instances
 | `--maxBuffer` | 10485760 | Bytes buffered while waiting for RUDICS; lower for tight-RAM hosts |
 | `--binary` | (unset) | Dump every chunk in both directions to this file (heavy SD I/O) |
 | `--disconnected` | False | Start with RUDICS disconnected, wait for `triggerOn` |
+| `--rudicsSpacing` | 10 | Seconds between closing a RUDICS connection and redialing |
+| `--reconnectMaxSerialIdle` | 600 | Start backing off the redial spacing once serial has been silent this long |
+| `--reconnectBackoffMax` | 1800 | Cap on the backed-off redial spacing |
 
 ### Trigger / suppression behavior
 
 Default triggers open RUDICS on `surface_<n>: ... Picking iridium or freewave` or `abort_the_mission`, and close it on `surface_<n>: ... Waiting for final gps fix`. Custom patterns are appendable via repeated `--triggerOn`/`--triggerOff`.
+
+### Connection intent
+
+The SFMC session is meant to look like a real glider's Iridium call: **up for the whole surfacing, down for the whole dive.** So the intent to be connected is owned by the triggers and nothing else — `triggerOn` raises it, `triggerOff` lowers it, and no timeout, dropped socket, or failed connect may change it. The glider talks plenty between a dive and the next surfacing; all of it is logged, none of it is sent to SFMC, and none of it reopens the connection.
+
+Flapping is bounded by redial *pacing* rather than by giving up. After a disconnect the next dial waits `--rudicsSpacing`; while serial has been silent longer than `--reconnectMaxSerialIdle` that spacing doubles on each close, capped at `--reconnectBackoffMax`. Any byte from the glider resets it. So a surfaced-but-quiet glider — a mass file delete can go many minutes between lines — is redialed slowly rather than abandoned, and a glider that is genuinely gone costs one dial every `--reconnectBackoffMax` seconds.
 
 Trigger matching is suppressed during file transfers to avoid spurious closes:
 - Lines that contain non-text bytes (zmodem framing)

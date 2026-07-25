@@ -281,11 +281,11 @@ class TestTimedOut:
             r.qWantOpen = True
             r.timedOut()
             assert r.s is None
-            # idleTimeout fires when there's been no serial activity for an
-            # extended period — close() then demotes intent because serial has
-            # been silent for > reconnectMaxSerialIdle (here, since program
-            # start: tLastSerialAction is still None).
-            assert r.qWantOpen is False
+            # An idle timeout drops the socket but not the intent: if the
+            # glider is still surfaced we redial, just more slowly each time
+            # serial stays silent.
+            assert r.qWantOpen is True
+            assert r.reconnectBackoff > r.args.rudicsSpacing
         finally:
             b.close()
 
@@ -422,45 +422,146 @@ class TestOpenClose:
 
 
 # ---------------------------------------------------------------------------
-# close() and the serial-idle threshold (reconnectMaxSerialIdle)
+# close() never touches intent; the serial-idle threshold paces redialing
 # ---------------------------------------------------------------------------
+
+def _connected(r: RUDICS) -> socket.socket:
+    """Give *r* a live socket so close() runs its real teardown path."""
+    a, b = socket.socketpair()
+    r.s = a
+    return b
+
 
 class TestCloseSerialIdleThreshold:
     def test_close_preserves_intent_when_serial_recent(self):
-        """Serial seen within the threshold: close() leaves qWantOpen True."""
+        """A dropped socket says nothing about whether the glider is surfaced."""
         r = RUDICS(make_args(reconnectMaxSerialIdle=600))
         r.qWantOpen = True
         r.tLastSerialAction = time.monotonic() - 60  # 1 min ago, < 10 min threshold
+        peer = _connected(r)
         r.close()
+        peer.close()
         assert r.qWantOpen is True
+        assert r.reconnectBackoff == r.args.rudicsSpacing
 
-    def test_close_demotes_intent_when_serial_stale(self):
-        """Serial silent beyond the threshold: close() demotes qWantOpen to False."""
-        r = RUDICS(make_args(reconnectMaxSerialIdle=600))
+    def test_close_preserves_intent_when_serial_stale(self):
+        """Silence past the threshold slows redialing; it does not give up.
+
+        Only triggerOff may lower intent -- an SFMC-side reap of a quiet
+        connection is not evidence that the glider dove.
+        """
+        r = RUDICS(make_args(reconnectMaxSerialIdle=600, rudicsSpacing=10))
         r.qWantOpen = True
         r.tLastSerialAction = time.monotonic() - 1200  # 20 min ago
+        peer = _connected(r)
         r.close()
-        assert r.qWantOpen is False
+        peer.close()
+        assert r.qWantOpen is True, "intent belongs to triggerOn/triggerOff alone"
+        assert r.reconnectBackoff == 20  # Doubled from rudicsSpacing
 
-    def test_close_demotes_intent_when_serial_never_seen(self):
-        """Never seen serial (tLastSerialAction is None): close() demotes to False.
-
-        This is the idle-USB-dongle case: plugged in, nothing talking, the
-        initial connection gets dropped by SFMC and we stop redialing.
-        """
-        r = RUDICS(make_args(reconnectMaxSerialIdle=600))
+    def test_close_preserves_intent_when_serial_never_seen(self):
+        """Idle-USB-dongle case: back off, but keep intent as the triggers set it."""
+        r = RUDICS(make_args(reconnectMaxSerialIdle=600, rudicsSpacing=10))
         r.qWantOpen = True
         assert r.tLastSerialAction is None
+        peer = _connected(r)
         r.close()
+        peer.close()
+        assert r.qWantOpen is True
+        assert r.reconnectBackoff == 20
+
+    def test_backoff_grows_geometrically_and_is_capped(self):
+        """Repeated closes into a silent glider redial ever more slowly."""
+        r = RUDICS(make_args(reconnectMaxSerialIdle=1, rudicsSpacing=10,
+                             reconnectBackoffMax=60))
+        r.tLastSerialAction = time.monotonic() - 100
+        seen = []
+        for _ in range(5):
+            peer = _connected(r)
+            r.close()
+            peer.close()
+            seen.append(r.reconnectBackoff)
+        assert seen == [20, 40, 60, 60, 60], seen
+
+    def test_serial_data_resets_the_backoff(self):
+        """The moment the glider speaks, redial spacing returns to normal."""
+        r = RUDICS(make_args(reconnectMaxSerialIdle=1, rudicsSpacing=10))
+        r.tLastSerialAction = time.monotonic() - 100
+        for _ in range(2):
+            peer = _connected(r)
+            r.close()
+            peer.close()
+        assert r.reconnectBackoff == 40
+
+        r.put(b'GliderDos A N >\r\n')
+
+        assert r.reconnectBackoff == 10
+
+    def test_tNextOpen_reflects_the_backoff(self):
+        """The grown spacing is what actually paces the next dial."""
+        r = RUDICS(make_args(reconnectMaxSerialIdle=1, rudicsSpacing=10))
+        r.tLastSerialAction = time.monotonic() - 100
+        for _ in range(2):
+            peer = _connected(r)
+            r.close()
+            peer.close()
+
+        assert r.tNextOpen >= time.monotonic() + 39
+
+
+# ---------------------------------------------------------------------------
+# Intent mirrors the glider: up on triggerOn, down on triggerOff, nothing else
+# ---------------------------------------------------------------------------
+
+class TestIntentIsTriggerDrivenOnly:
+    def test_dive_stays_down_through_heavy_chatter(self):
+        """The glider talks all through a dive; none of it may redial SFMC."""
+        r = RUDICS(make_args(reconnectMaxSerialIdle=600))
+        r.put(b'surface_0:2024/01/01 00:00:00 Waiting for final gps fix\r\n')
         assert r.qWantOpen is False
 
-    def test_close_demotes_at_exact_threshold_boundary(self):
-        """A tick past the threshold is enough to demote (strict greater-than)."""
-        r = RUDICS(make_args(reconnectMaxSerialIdle=1))
-        r.qWantOpen = True
-        r.tLastSerialAction = time.monotonic() - 1.5
+        for line in (b'sensor: m_depth=12.4 m_water_vx=0.08\r\n',
+                     b'GliderDos A N >\r\n',
+                     b'behavior_surface_2: SUBSTATE 0 ->2 : Picking iridium\r\n',
+                     b'Vehicle Name: unit_999\r\n'):
+            r.put(line)
+
+        assert r.qWantOpen is False, "only triggerOn may bring the link back"
+        assert not r.buffer, "dive chatter is logged, never sent to SFMC"
+        assert r.s is None
+
+    def test_dive_stays_down_across_a_long_silence(self):
+        """A quiet stretch mid-dive must not re-open the link either."""
+        r = RUDICS(make_args(reconnectMaxSerialIdle=600))
+        r.put(b'surface_0:2024/01/01 00:00:00 Waiting for final gps fix\r\n')
+        r.tLastSerialAction = time.monotonic() - 1200  # 20 min of silence
         r.close()
+
+        r.put(b'sensor: m_depth=44.1\r\n')
+
         assert r.qWantOpen is False
+        assert not r.buffer
+
+    def test_surfacing_brings_it_back(self):
+        """triggerOn is the only thing that raises intent."""
+        r = RUDICS(make_args())
+        r.put(b'surface_0:2024/01/01 00:00:00 Waiting for final gps fix\r\n')
+        assert r.qWantOpen is False
+
+        r.put(b'surface_1:2024/01/01 06:00:00 Picking iridium or freewave\r\n')
+
+        assert r.qWantOpen is True
+
+    def test_idle_reap_mid_surfacing_keeps_intent(self):
+        """SFMC reaping a quiet connection does not end the surfacing."""
+        r = RUDICS(make_args(reconnectMaxSerialIdle=600))
+        r.put(b'surface_0:2024/01/01 01:00:00 Picking iridium or freewave\r\n')
+        assert r.qWantOpen is True
+        r.tLastSerialAction = time.monotonic() - 1200  # Glider quiet at the prompt
+
+        r.close()  # SFMC drops the idle connection
+
+        assert r.qWantOpen is True, "still surfaced, so still want the link"
 
 
 # ---------------------------------------------------------------------------
@@ -544,8 +645,8 @@ class TestWriteReadErrors:
         assert r.s is None
         assert r.qWantOpen is True
 
-    def test_read_exception_with_stale_serial_stops(self):
-        """read() exception with no recent serial stops the reconnect cycle."""
+    def test_read_exception_with_stale_serial_backs_off(self):
+        """A read error with no recent serial slows redialing, never gives up."""
         a, b = socket.socketpair()
         b.close()
         r = RUDICS(make_args(reconnectMaxSerialIdle=5))
@@ -557,7 +658,8 @@ class TestWriteReadErrors:
         result = r.read(1024)
         assert result == b''
         assert r.s is None
-        assert r.qWantOpen is False
+        assert r.qWantOpen is True, "only triggerOff lowers intent"
+        assert r.reconnectBackoff > r.args.rudicsSpacing
 
     def test_read_exception_preserves_qWantOpen_false(self):
         """read() exception never flips qWantOpen on — only triggerOn does."""
@@ -572,7 +674,7 @@ class TestWriteReadErrors:
         result = r.read(1024)
         assert result == b''
         assert r.s is None
-        # ...close() only demotes, never promotes.
+        # ...close() does not touch intent at all.
         assert r.qWantOpen is False
 
     def test_get_eof_with_recent_serial_redials(self):
@@ -594,8 +696,8 @@ class TestWriteReadErrors:
         assert r.qWantOpen is True
         a.close()
 
-    def test_get_eof_with_stale_serial_stops(self):
-        """get() EOF with no recent serial stops the reconnect cycle."""
+    def test_get_eof_with_stale_serial_backs_off(self):
+        """A peer EOF with no recent serial slows redialing, never gives up."""
         a, b = socket.socketpair()
         r = RUDICS(make_args(reconnectMaxSerialIdle=5))
         r.s = a
@@ -606,7 +708,8 @@ class TestWriteReadErrors:
         c = r.get(1024)
         assert c == b''
         assert r.s is None
-        assert r.qWantOpen is False
+        assert r.qWantOpen is True, "an SFMC reap is not a dive"
+        assert r.reconnectBackoff > r.args.rudicsSpacing
         a.close()
 
     def test_get_eof_preserves_qWantOpen_false(self):
@@ -685,7 +788,8 @@ class TestOpenErrors:
         r.qWantOpen = False
         r.open()
         assert r.s is None
-        assert r.qWantOpen is True  # Still wants to open
+        # open() no longer promotes intent: triggerOn/triggerOff own it.
+        assert r.qWantOpen is False
 
 
 # ---------------------------------------------------------------------------
@@ -806,68 +910,6 @@ class TestTypeCatSuppression:
         # Now real trigger should work
         r.put(b"surface_0: Waiting for final gps fix\n")
         assert r.qWantOpen is False
-
-
-# ---------------------------------------------------------------------------
-# Idle demotion is re-armable (a silent glider must not lose the link for the
-# rest of the surfacing)
-# ---------------------------------------------------------------------------
-
-def test_close_marks_idle_demotion():
-    """close() after a long serial silence records why it dropped intent."""
-    r = RUDICS(make_args(reconnectMaxSerialIdle=600))
-    r.tLastSerialAction = time.monotonic() - 700  # Quiet for longer than the threshold
-    r.close()
-
-    assert r.qWantOpen is False
-    assert r.qIdleDemoted is True
-
-
-def test_close_does_not_mark_demotion_when_serial_is_active():
-    """A close() while the glider is talking leaves intent alone."""
-    r = RUDICS(make_args(reconnectMaxSerialIdle=600))
-    r.tLastSerialAction = time.monotonic()  # Talking right now
-    r.close()
-
-    assert r.qWantOpen is True
-    assert r.qIdleDemoted is False
-
-
-def test_serial_data_rearms_intent_after_idle_demotion():
-    """Serial output disproves 'the glider has gone quiet', so intent returns."""
-    r = RUDICS(make_args(reconnectMaxSerialIdle=600))
-    r.tLastSerialAction = time.monotonic() - 700
-    r.close()
-    assert r.qWantOpen is False
-
-    r.put(b'GliderDos A N >\r\n')  # No trigger match, just the glider talking
-
-    assert r.qWantOpen is True, "a talking glider must get its link back"
-    assert r.qIdleDemoted is False
-
-
-def test_rearmed_intent_buffers_the_data_that_rearmed_it():
-    """The bytes that prove the glider is alive are not thrown away."""
-    r = RUDICS(make_args(reconnectMaxSerialIdle=600))
-    r.tLastSerialAction = time.monotonic() - 700
-    r.close()
-
-    r.put(b'sensor: m_depth=0.4\r\n')
-
-    assert bytes(r.buffer) == b'sensor: m_depth=0.4\r\n'
-
-
-def test_triggeroff_demotion_is_not_rearmed_by_serial_data():
-    """A deliberate triggerOff stays off until the next triggerOn."""
-    r = RUDICS(make_args())
-    r.put(b'surface_1: Waiting for final gps fix\r\n')  # triggerOff
-    assert r.qWantOpen is False
-    assert r.qIdleDemoted is False
-
-    r.put(b'sensor: m_depth=12.0\r\n')  # Glider still chatting on the way down
-
-    assert r.qWantOpen is False, "dive must not be undone by ordinary output"
-    assert not r.buffer
 
 
 # ---------------------------------------------------------------------------

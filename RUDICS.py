@@ -61,12 +61,16 @@ class RUDICS:
         # None until put() sees the first byte; bare 0 sentinel would clash with
         # the small time.monotonic() values seen on freshly-booted CI runners.
         self.tLastSerialAction: float | None = None
-        self.qWantOpen = not args.disconnected # Initially connection state
-        # True when close() dropped intent purely because serial had gone
-        # quiet. The next serial byte disproves that premise and re-arms
-        # intent; without this the link stays down for the rest of the
-        # surfacing, since triggerOn fires only once per surfacing.
-        self.qIdleDemoted: bool = False
+        # Intent. After construction this is written ONLY by triggerOn and
+        # triggerOff in put(), so the SFMC session mirrors the glider: up for
+        # the whole surfacing, down for the whole dive, like a real Iridium
+        # call. Nothing else -- not close(), not a timeout, not a failed
+        # connect -- may change it.
+        self.qWantOpen = not args.disconnected
+        # Redial spacing after a close. Grows while the glider is silent so a
+        # dead SFMC or a quiet glider cannot be redialed at full rate; any
+        # serial byte resets it. This is what bounds flapping now.
+        self.reconnectBackoff: float = args.rudicsSpacing
         # Set by read() when recv() reports EWOULDBLOCK so get() can tell a
         # spurious wakeup apart from a real EOF and not close a live socket.
         self.qWouldBlock: bool = False
@@ -102,9 +106,14 @@ class RUDICS:
         grp.add_argument('--rudicsMaxOpenTimeDelay', type=int, default=1800,
                 help="Time after a forced RUDICS disconnect until reopening")
         grp.add_argument('--reconnectMaxSerialIdle', type=float, default=600,
-                help="Stop reconnecting if no serial data seen for this many seconds. "
-                     "Bounds connection flapping when the glider is silent. "
-                     "Set longer than the SFMC server-side idle reaper (~5 min).")
+                help="Start backing off the redial spacing once no serial data has "
+                     "been seen for this many seconds. The connection is never "
+                     "given up on -- only triggerOn/triggerOff decide whether it "
+                     "should be up -- but a silent glider is redialed ever more "
+                     "slowly. Set longer than the SFMC idle reaper (~5 min).")
+        grp.add_argument('--reconnectBackoffMax', type=float, default=1800,
+                help="Cap on the backed-off redial spacing in seconds. Any serial "
+                     "byte resets the spacing to --rudicsSpacing.")
         grp.add_argument('--connectTimeout', type=float, default=10,
                 help="Timeout in seconds for connecting to the RUDICS port")
         grp.add_argument('--maxBuffer', type=int, default=MAX_BUFFER_SIZE,
@@ -181,8 +190,7 @@ class RUDICS:
             logger.info('Max open time exceeded')
             self.close()
             self.tNextOpen = max(self.tNextOpen, now + self.args.rudicsMaxOpenTimeDelay)
-            self.qWantOpen = True
-            return
+            return # Intent untouched: if the glider is still surfaced we redial
 
         # Idle timeout: time since last activity or connection open
         tRef = max(self.tLastOpen, self.tLastAction or 0)
@@ -236,14 +244,10 @@ class RUDICS:
         now = time.monotonic()
         self.tLastAction = now
         self.tLastSerialAction = now
-
-        if self.qIdleDemoted:
-            # close() dropped intent because the glider had gone quiet. This
-            # byte proves it is talking again, so restore intent rather than
-            # leaving the pilot with no link until the next surfacing.
-            logger.info('Serial data after idle demotion, restoring RUDICS intent')
-            self.qWantOpen = True
-            self.qIdleDemoted = False
+        # The glider is talking, so the premise behind any accumulated redial
+        # backoff is gone. Intent is untouched: only triggerOn/triggerOff below
+        # may change it.
+        self.reconnectBackoff = self.args.rudicsSpacing
 
         wasOpen = self.qWantOpen
 
@@ -301,10 +305,9 @@ class RUDICS:
                 if self.qWantOpen: # Check if we should turn off?
                     if self.triggerOff.search(line) is not None:
                         logger.info('triggerOff matched: %s', msg.strip())
+                        # The glider dove. Stay down until the next triggerOn,
+                        # however much it says in between.
                         self.qWantOpen = False
-                        # Deliberate shutdown, not an idle demotion: stay down
-                        # until the next triggerOn, whatever the glider says.
-                        self.qIdleDemoted = False
                         self.close()
                         self.buffer = bytearray()
                         wasOpen = False
@@ -378,17 +381,10 @@ class RUDICS:
         return b''
 
     def close(self) -> None:
-        # qWantOpen is intent. triggerOn/triggerOff are the primary controls,
-        # but close() also demotes intent to False when serial has been silent
-        # for longer than reconnectMaxSerialIdle (or never seen) — that caps
-        # flapping when the glider stops talking, without losing reconnects
-        # during normal SFMC ~5-min idle reaps.
-        if self.tLastSerialAction is None or \
-                (time.monotonic() - self.tLastSerialAction) > self.args.reconnectMaxSerialIdle:
-            self.qWantOpen = False
-            # Mark it re-armable: the premise ("glider has gone quiet") is
-            # evaluated once, here, and only put() can disprove it later.
-            self.qIdleDemoted = True
+        # Intent is deliberately not touched here. A dropped socket says
+        # nothing about whether the glider is surfaced, so only triggerOn and
+        # triggerOff may change it. Flapping is bounded further down, by how
+        # often we redial.
         self.qTypeCat = False  # Clear type/cat suppression on disconnect
         self.qConnecting = False  # Cancel any in-flight connect
         if self.s is None:
@@ -411,7 +407,20 @@ class RUDICS:
         self.tLastOpen = 0
         now = time.monotonic()
         self.tLastClose = now
-        self.tNextOpen = max(self.tNextOpen, now + self.args.rudicsSpacing)
+        # An actual connection just went away. While the glider has been
+        # silent past reconnectMaxSerialIdle, redial ever more slowly (capped)
+        # so a quiet glider or a dead SFMC cannot be dialed at full rate; any
+        # serial byte in put() resets this. Intent is untouched: if the glider
+        # is surfaced we still want the link, we just ask for it less often.
+        if self.tLastSerialAction is None or \
+                (now - self.tLastSerialAction) > self.args.reconnectMaxSerialIdle:
+            self.reconnectBackoff = min(self.reconnectBackoff * 2,
+                    self.args.reconnectBackoffMax)
+            logger.info('Serial idle past %ss, redial spacing now %ss',
+                    self.args.reconnectMaxSerialIdle, self.reconnectBackoff)
+        else:
+            self.reconnectBackoff = self.args.rudicsSpacing
+        self.tNextOpen = max(self.tNextOpen, now + self.reconnectBackoff)
 
     def open(self) -> None:
         if self.s is not None: # Already open or already connecting
@@ -420,8 +429,7 @@ class RUDICS:
             return
 
         if time.monotonic() < self.tNextOpen: # Don't open yet
-            self.qWantOpen = True # We want to be open
-            return
+            return # Intent is unchanged; inputFileno retries after tNextOpen
 
         args = self.args
         s = None
@@ -436,7 +444,6 @@ class RUDICS:
                 self.s = s
                 self.qConnecting = True
                 self.tConnectStarted = time.monotonic()
-                self.qWantOpen = True
                 logger.info('Connecting to %s:%s', args.host, args.port)
                 return
             # Immediate completion (e.g. localhost): finalize now.
@@ -449,7 +456,6 @@ class RUDICS:
                     # Already-dead fd; the retry below is what matters.
                     logger.debug('Ignoring close error on failed connect: %s', e)
             self.tNextOpen = time.monotonic() + args.rudicsDelay
-            self.qWantOpen = True
             logger.exception('Unexpected error connecting to %s:%s, wait %s seconds to retry',
                     args.host, args.port, args.rudicsDelay)
 
@@ -475,7 +481,6 @@ class RUDICS:
         self.s = s
         self.qConnecting = False
         self.tLastOpen = time.monotonic()
-        self.qWantOpen = True
         logger.info('Connected to %s:%s', self.args.host, self.args.port)
 
     def _abandonConnect(self) -> None:
@@ -489,7 +494,6 @@ class RUDICS:
             self.s = None
         self.qConnecting = False
         self.tNextOpen = time.monotonic() + self.args.rudicsDelay
-        self.qWantOpen = True
 
     def _checkConnect(self) -> None:
         """Resolve an in-flight non-blocking connect via SO_ERROR."""
