@@ -5,13 +5,16 @@
 #
 # Jan-2020, Pat Welch, pat@mousebrains.com
 
-import socket
-import threading
 import argparse
 import logging
 import select
-from io import FileIO, BufferedWriter
+import socket
+import threading
+from io import BufferedWriter, FileIO
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
 
 def addArgs(parser: argparse.ArgumentParser) -> None:
     ''' Add my command line arguments '''
@@ -54,15 +57,15 @@ class FauxDS(threading.Thread):
         try:
             with self.sock as s:
                 s.listen(1)
-                logging.info('FauxDS listening at %s:%s', self.host, self.port)
+                logger.info('FauxDS listening at %s:%s', self.host, self.port)
                 while True:
                     (conn, addr) = s.accept()
-                    logging.info('FauxDS connection from %s', addr)
+                    logger.info('FauxDS connection from %s', addr)
                     with conn:
                         self.doit(conn)
-                    logging.info('FauxDS connection ended, waiting for next')
+                    logger.info('FauxDS connection ended, waiting for next')
         except Exception:
-            logging.exception('FauxDS')
+            logger.exception('FauxDS')
 
     def doit(self, connection: socket.socket) -> None:
         args = self.args
@@ -71,12 +74,14 @@ class FauxDS(threading.Thread):
         ifn = args.dsInput
         ofn = args.dsOutput
 
-        ifp: FileIO | None = None if ifn is None else open(ifn, 'rb', buffering=0)
-        ofp: BufferedWriter | None = open(ofn, 'wb')
+        # SIM115: both handles live across the select loop below and are
+        # closed in its finally block, which is the context manager here.
+        ifp: FileIO | None = None if ifn is None else open(ifn, 'rb', buffering=0)  # noqa: SIM115
+        ofp: BufferedWriter | None = open(ofn, 'wb')  # noqa: SIM115
 
         try:
-            logging.info('FauxDS opened %s for input', args.dsInput)
-            logging.info('FauxDS opened %s for output', args.dsOutput)
+            logger.info('FauxDS opened %s for input', args.dsInput)
+            logger.info('FauxDS opened %s for output', args.dsOutput)
 
             toSocket = bytearray()
             toFile = bytearray()
@@ -104,14 +109,14 @@ class FauxDS(threading.Thread):
                         if c == b'': # EOF
                             ifp.close()
                             ifp = None
-                            logging.info('FauxDS closed %s', ifn)
+                            logger.info('FauxDS closed %s', ifn)
                         else:
                             toSocket += c
                     else:
                         c = fp.recv(1)
                         if c == b'': # EOF
                             conn = None
-                            logging.info('FauxDS closed connection')
+                            logger.info('FauxDS closed connection')
                         else:
                             toFile += c
 
@@ -128,4 +133,4 @@ class FauxDS(threading.Thread):
                 ifp.close()
             if ofp is not None:
                 ofp.close()
-                logging.info('FauxDS closed %s', ofn)
+                logger.info('FauxDS closed %s', ofn)

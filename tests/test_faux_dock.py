@@ -1,8 +1,10 @@
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import socket
 import time
+
 import FauxDockServer
 from tests.conftest import make_args
 
@@ -97,7 +99,7 @@ def test_input_file_to_client(tmp_path):
             if not chunk:
                 break
             received += chunk
-        except socket.timeout:
+        except TimeoutError:
             break
     s.close()
     assert bytes(received) == payload

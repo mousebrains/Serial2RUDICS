@@ -14,10 +14,10 @@ jobs:
   ruff:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: "3.14"
           cache: pip
           cache-dependency-path: |
             requirements.txt
@@ -30,10 +30,10 @@ jobs:
   mypy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: "3.14"
           cache: pip
           cache-dependency-path: |
             requirements.txt
@@ -48,11 +48,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.11 = Debian Bookworm (Pi OS Bookworm), 3.13 = Debian Trixie
-        python-version: ["3.11", "3.12", "3.13"]
+        # 3.11 = Debian Bookworm (Pi OS Bookworm), 3.13 = Debian Trixie.
+        # 3.14 is ahead of any Pi OS release; it guards against future drift.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip

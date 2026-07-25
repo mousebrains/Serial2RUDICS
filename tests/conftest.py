@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+
 import pytest
 
 # Ensure the project root is on sys.path so we can import modules
@@ -83,6 +84,7 @@ def make_args(**overrides) -> argparse.Namespace:
         "rudicsMaxOpenTime": 60,
         "rudicsMaxOpenTimeDelay": 1,
         "reconnectMaxSerialIdle": 600,
+        "reconnectBackoffMax": 1800,
         "connectTimeout": 2,
         "maxBuffer": 10 * 1024 * 1024,
         "disconnected": False,

@@ -1,6 +1,6 @@
-import sys
 import os
 import select
+import sys
 import time
 import tty
 
@@ -110,8 +110,9 @@ def test_setup_with_input_returns_pty_path(tmp_path):
     ofn.write_bytes(b"")
 
     args = make_args(input=str(ifn), output=str(ofn))
-    port = FauxSerial.setup(args)
+    port, faux = FauxSerial.setup(args)
 
+    assert faux is not None, "setup() must return the unstarted instance"
     assert isinstance(port, str)
     assert port.startswith("/dev/"), f"Expected /dev/ path but got {port!r}"
 
@@ -120,9 +121,10 @@ def test_setup_with_serial_returns_device_directly():
     """setup() with --serial returns the serial device path unchanged."""
     device = "/dev/ttyUSB0"
     args = make_args(serial=device)
-    port = FauxSerial.setup(args)
+    port, faux = FauxSerial.setup(args)
 
     assert port == device
+    assert faux is None, "a real serial port needs no faux instance"
 
 
 def test_graceful_shutdown_on_input_eof(tmp_path):

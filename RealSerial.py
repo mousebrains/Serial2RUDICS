@@ -7,7 +7,10 @@ import argparse
 import fcntl
 import logging
 import os
+
 import serial
+
+logger = logging.getLogger(__name__)
 
 baudrates = serial.Serial.BAUDRATES
 
@@ -54,14 +57,27 @@ class RealSerial:
         except BlockingIOError:
             return # Kernel TTY buffer full; retry on next select wakeup
         except OSError:
-            logging.exception('Error writing serial port %s', self.port)
+            logger.exception('Error writing serial port %s', self.port)
             self.close()
             return
         if n > 0:
             del self.buffer[:n]
 
     def put(self, c: bytes) -> None:
-        self.buffer += c
+        if self.fp is None:
+            # A closed port can never be written, and close() cannot clear the
+            # buffer a second time (it returns early on fp is None). Buffering
+            # here would make __bool__ true again with no drain path, which is
+            # exactly the wedge close() clears. doit() calls put() for every
+            # dockserver byte without checking whether the port is still open.
+            return
+        # Bounded like RUDICS.put(): a wedged or slow TTY must not let the
+        # dockserver->glider direction grow until the MemoryMax kill.
+        if len(self.buffer) < self.args.maxBuffer:
+            self.buffer += c
+        else:
+            logger.warning('Serial buffer full (%s bytes), discarding %s bytes',
+                    len(self.buffer), len(c))
 
     def nAvailable(self) -> int:
         return self.fp.in_waiting if self.fp else 0
@@ -74,11 +90,11 @@ class RealSerial:
             if not c: # EOF
                 self.close()
         except serial.serialutil.SerialException:
-            logging.exception('Exception while reading serial port')
+            logger.exception('Exception while reading serial port')
             self.close()
             return b''
         except Exception:
-            logging.exception('Unexpected exception while reading serial port')
+            logger.exception('Unexpected exception while reading serial port')
             self.close()
             return b''
         else:
@@ -95,15 +111,15 @@ class RealSerial:
             flags = fcntl.fcntl(fp.fileno(), fcntl.F_GETFL)
             fcntl.fcntl(fp.fileno(), fcntl.F_SETFL, flags | os.O_NONBLOCK)
             self.fp = fp
-            logging.info('Opened serial port %s parity=%s baudrate=%s bytesize=%s stopbits=%s',
+            logger.info('Opened serial port %s parity=%s baudrate=%s bytesize=%s stopbits=%s',
                 args.serial, args.parity, args.baudrate, args.bytesize, args.stopbits)
 
         except serial.serialutil.SerialException:
-            logging.exception('Error opening serial port %s', self.port)
+            logger.exception('Error opening serial port %s', self.port)
         except ValueError:
-            logging.exception('Value error opening serial port %s', self.port)
+            logger.exception('Value error opening serial port %s', self.port)
         except Exception:
-            logging.exception('Unexpected error opening serial port %s', self.port)
+            logger.exception('Unexpected error opening serial port %s', self.port)
 
     def close(self) -> None:
         if self.fp is None:
@@ -111,9 +127,17 @@ class RealSerial:
 
         try:
             self.fp.close()
-            logging.info('Closed %s', self.port)
+            logger.info('Closed %s', self.port)
         except serial.serialutil.SerialException:
-            logging.exception('Error closing serial port %s', self.port)
+            logger.exception('Error closing serial port %s', self.port)
         except Exception:
-            logging.exception('Unexpected error closing serial port %s', self.port)
+            logger.exception('Unexpected error closing serial port %s', self.port)
         self.fp = None
+        # Nothing can ever drain a closed port, and __bool__ counts a non-empty
+        # buffer as "still alive" -- leaving it would keep doit()'s
+        # `while serial or rudics` loop running forever with no work to do and
+        # no way for systemd to notice and restart us.
+        if self.buffer:
+            logger.warning('Discarding %s undeliverable bytes queued for %s',
+                    len(self.buffer), self.port)
+            self.buffer.clear()

@@ -8,6 +8,7 @@ import argparse
 import logging
 import logging.handlers
 
+
 def addArgs(parser: argparse.ArgumentParser) -> None:
     grp = parser.add_argument_group('Logger Related Options')
     grp.add_argument('--logfile', help='Name of logfile')
