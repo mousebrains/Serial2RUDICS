@@ -15,6 +15,7 @@
 Description=ttyUSB to RUDICS service on %I
 BindsTo=dev-%i.device
 After=dev-%i.device
+@TUNNELDEPS@
 
 [Service]
 # Type=simple # Default

@@ -35,6 +35,78 @@ The service defaults to running as the current user with logs written to `~/logs
    sudo udevadm control --reload
    ```
 
+If the dockserver is not directly reachable, see
+[Tunneling through an ssh proxy host](#tunneling-through-an-ssh-proxy-host).
+
+## Tunneling through an ssh proxy host
+
+When the dockserver is only reachable via an intermediate host you can ssh to,
+`install.py --tunnelProxy` installs `rudics-tunnel.service`: a single
+`ssh -L 127.0.0.1:16565:<dockserver>:6565` forward shared by every port
+instance, and points the port services at the local end of it. No change to
+`serial2RUDICS.py` — each connection it makes to the local port becomes its own
+ssh channel to the dockserver, so the per-surfacing connect/disconnect cycle
+behaves exactly as it does on a direct connection.
+
+```
+python3 install.py --hostname <dockserver> --port 6565 \
+    --tunnelProxy <user>@<proxyhost>
+```
+
+`--hostname`/`--port` still mean the dockserver. The generated units become
+`--host=127.0.0.1 --port=16565` for the port services, with the real endpoint
+carried inside the tunnel. Change the local port with `--tunnelLocalPort`.
+The port instances get `Wants=`/`After=rudics-tunnel.service` — deliberately
+not `Requires=`, so a tunnel restart does not tear down all ten port services;
+they get ECONNREFUSED on the local forward and retry.
+
+### One-time setup on the proxy host
+
+The service runs `ssh` with `BatchMode=yes` and `StrictHostKeyChecking=yes`, so
+the key must be passphrase-less and the host key already known — it cannot
+prompt, and `ProtectSystem=strict` keeps `~/.ssh` read-only:
+
+```
+ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_rudics       # override with --tunnelKey
+ssh-keyscan -H <proxyhost> >> ~/.ssh/known_hosts
+ssh-copy-id -i ~/.ssh/id_rudics <user>@<proxyhost>
+```
+
+Then restrict that key on the proxy host so it can open nothing but this one
+forward (OpenSSH 7.2+), in the proxy's `~/.ssh/authorized_keys`:
+
+```
+restrict,port-forwarding,permitopen="<dockserver>:6565" ssh-ed25519 AAAA... rudics-tunnel
+```
+
+`install.py` only enables the tunnel unit — nothing starts it, since udev has
+no reason to. Start it once the key is in place:
+
+```
+sudo systemctl start rudics-tunnel.service
+ss -lnt | grep 16565                                  # forward is listening
+journalctl -u rudics-tunnel.service -f
+```
+
+### Liveness, and the one case the tunnel hides
+
+Direct-connect, `SO_KEEPALIVE` probes the dockserver end to end and catches a
+half-open connection in ~150s. Through a tunnel the socket terminates at the
+local ssh client, so that only proves ssh is alive on this host. The failure
+cases split:
+
+| Failure | Detected by | Latency |
+| --- | --- | --- |
+| Path to the proxy host dies | `ServerAliveInterval=30` × `ServerAliveCountMax=3`; ssh exits, channels close, EOF to the app | ~90s |
+| Dockserver process dies | FIN/RST closes the ssh channel, EOF to the app | immediate |
+| Silent partition between proxy and dockserver | nothing — the channel stays open | `--idleTimeout` (3600s) |
+
+Only the third case is a regression against direct connection. Lowering
+`--timeout` (which sets `--idleTimeout`) to ~900 for tunneled installs bounds
+it; the cost is a redial after 15 quiet minutes, which the existing reconnect
+logic already handles. Note that the per-port logs will read
+`Connected to 127.0.0.1:16565` rather than naming the dockserver.
+
 ## Usage
 
 serial2RUDICS.py --host=localhost --port=6565 --serial=/dev/ttyUSB0

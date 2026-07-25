@@ -20,16 +20,51 @@ def barebones(content: str) -> list[str]:
         lines.append(line)
     return lines
 
+def expand_units(services: list[str], devices: list[str]) -> list[str]:
+    """Expand systemd template units into the instance names to enable.
+
+    A template unit (foo@.service) gets one instance per device; a plain unit
+    such as the ssh tunnel is enabled once, not once per device.
+    """
+    units: list[str] = []
+    for service in services:
+        if "@.service" in service:
+            units.extend(service.replace("@", "@" + device, 1) for device in devices)
+        else:
+            units.append(service)
+    return units
+
+
+def mkTunnelDeps(args: Namespace) -> str:
+    """[Unit] ordering that ties a port service to the ssh tunnel service."""
+    return ("# Wants=, not Requires=: a tunnel restart must not tear down every\n"
+            "# port instance; they get ECONNREFUSED on the forward and retry.\n"
+            f"Wants={args.tunnelService}\n"
+            f"After={args.tunnelService}")
+
+
 def substitute_template(content: str, args: Namespace, root: str) -> str:
     """Replace @MARKER@ placeholders in a service template with args values."""
+    # When tunneling, the port services talk to the local end of the ssh
+    # forward and the tunnel unit carries @REMOTEHOST@:@REMOTEPORT@ onward,
+    # so --hostname/--port keep meaning "the dockserver" either way.
+    qTunnel = args.tunnelProxy is not None
     content = content.replace("@DATE@", "Generated on " + time.asctime())
     content = content.replace("@GENERATED@", str(args))
+    content = content.replace("@REMOTEHOST@", args.hostname)
+    content = content.replace("@REMOTEPORT@", str(args.port))
+    content = content.replace("@LOCALPORT@", str(args.tunnelLocalPort))
+    content = content.replace("@PROXY@", args.tunnelProxy or "")
+    content = content.replace("@SSHKEY@", args.tunnelKey or "")
+    content = content.replace("@SSH@", args.ssh)
+    content = content.replace("@TUNNELRESTARTSECONDS@", str(args.tunnelRestartSeconds))
+    content = content.replace("@TUNNELDEPS@", mkTunnelDeps(args) if qTunnel else "")
     content = content.replace("@USERNAME@", args.username)
     content = content.replace("@GROUPNAME@", args.group)
     content = content.replace("@DIRECTORY@", args.directory)
     content = content.replace("@EXECUTABLE@", os.path.join(root, args.executable))
-    content = content.replace("@HOSTNAME@", args.hostname)
-    content = content.replace("@PORT@", str(args.port))
+    content = content.replace("@HOSTNAME@", "127.0.0.1" if qTunnel else args.hostname)
+    content = content.replace("@PORT@", str(args.tunnelLocalPort if qTunnel else args.port))
     content = content.replace("@BAUDRATE@", str(args.baudrate))
     content = content.replace("@TIMEOUT@", str(args.timeout))
     content = content.replace("@RESTARTSECONDS@", str(args.restartSeconds))
@@ -46,6 +81,15 @@ def validate_args(args: Namespace) -> None:
         raise SystemExit(f"--restartSeconds must be positive, got {args.restartSeconds}")
     if not args.memoryMax:
         raise SystemExit("--memoryMax must be a non-empty systemd memory value (e.g. 128M)")
+    if args.tunnelProxy is None:
+        return
+    if not args.tunnelProxy.strip():
+        raise SystemExit("--tunnelProxy must be [user@]hostname of the ssh proxy host")
+    if not 1 <= args.tunnelLocalPort <= 65535:
+        raise SystemExit(f"--tunnelLocalPort must be 1-65535, got {args.tunnelLocalPort}")
+    if args.tunnelRestartSeconds < 1:
+        raise SystemExit(
+                f"--tunnelRestartSeconds must be positive, got {args.tunnelRestartSeconds}")
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -69,6 +113,20 @@ if __name__ == "__main__":
             help="systemd MemoryMax= value per service (default 128M; lower if running many ports on tight RAM)")
     grp.add_argument("--executable", type=str, default="serial2RUDICS.py",
             help="Executable name to be executed by service")
+    grp = parser.add_argument_group(description="SSH tunnel related options")
+    grp.add_argument("--tunnelProxy", type=str,
+            help="Reach the dockserver through this ssh proxy host, [user@]hostname. "
+                 "Installs the tunnel service and points the port services at the "
+                 "local end of the forward instead of --hostname directly")
+    grp.add_argument("--tunnelLocalPort", type=int, default=16565,
+            help="Port on 127.0.0.1 the ssh tunnel forwards from")
+    grp.add_argument("--tunnelKey", type=str,
+            help="SSH identity file for the tunnel (default ~USER/.ssh/id_rudics)")
+    grp.add_argument("--tunnelService", type=str, default="rudics-tunnel.service",
+            help="Service file for the ssh tunnel")
+    grp.add_argument("--tunnelRestartSeconds", type=int, default=5,
+            help="Time before restarting the tunnel after ssh exits")
+    grp.add_argument("--ssh", type=str, default="/usr/bin/ssh", help="ssh executable")
     parser.add_argument("--force", action="store_true", help="Force writing a new file")
     parser.add_argument("--systemctl", type=str, default="/bin/systemctl",
             help="systemctl executable")
@@ -81,6 +139,9 @@ if __name__ == "__main__":
     if not args.service:
         args.service.append("USBToRUDICS@.service")
 
+    if (args.tunnelProxy is not None) and (args.tunnelService not in args.service):
+        args.service.append(args.tunnelService)
+
     if not args.device:
         args.device = [f"ttyUSB{x}" for x in range(10)]
 
@@ -90,8 +151,13 @@ if __name__ == "__main__":
     if args.directory is None:
         args.directory = os.path.expanduser(f"~{args.username}/logs")
 
+    # The key is read by the service user, not by whoever runs this script.
+    if args.tunnelKey is None:
+        args.tunnelKey = os.path.expanduser(f"~{args.username}/.ssh/id_rudics")
+
     validate_args(args)
 
+    args.tunnelKey = os.path.abspath(os.path.expanduser(args.tunnelKey))
     args.directory = os.path.abspath(os.path.expanduser(args.directory))
     args.serviceDirectory = os.path.abspath(os.path.expanduser(args.serviceDirectory))
 
@@ -146,13 +212,23 @@ if __name__ == "__main__":
         print("Forcing reload of daemon")
         subprocess.run((args.sudo, args.systemctl, "daemon-reload"), shell=False, check=True)
 
-        if args.device:
-            devices = [
-                service.replace("@", "@" + device, 1)
-                for service in args.service
-                for device in args.device
-            ]
+        units = expand_units(args.service, args.device)
+        if units:
             cmd = [args.sudo, args.systemctl, "enable"]
-            cmd.extend(devices)
-            print("Enabling", " ".join(devices))
+            cmd.extend(units)
+            print("Enabling", " ".join(units))
             subprocess.run(cmd, shell=False, check=True)
+
+        if args.tunnelProxy is not None:
+            # udev starts the port instances, but nothing triggers the tunnel,
+            # so it stays down until boot unless started by hand. Not started
+            # here: the ssh key and known_hosts may not be in place yet, and
+            # Restart=always would loop on the failure.
+            print(f"\nSSH tunnel installed: 127.0.0.1:{args.tunnelLocalPort}"
+                  f" -> {args.hostname}:{args.port} via {args.tunnelProxy}")
+            print(f"Before starting it, on this host as {args.username}:")
+            print(f"  ssh-keygen -t ed25519 -N '' -f {args.tunnelKey}   # if not already made")
+            print(f"  ssh-keyscan -H {args.tunnelProxy.split('@')[-1]}"
+                  f" >> ~{args.username}/.ssh/known_hosts")
+            print(f"and install {args.tunnelKey}.pub on the proxy host, then:")
+            print(f"  sudo systemctl start {args.tunnelService}")

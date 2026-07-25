@@ -1,0 +1,62 @@
+#
+# Automatically generated on @DATE@
+# ARGS: @GENERATED@
+#
+# SSH tunnel from this host to a dockserver RUDICS listener, through a proxy
+# host reachable via ssh. One tunnel serves every USBToRUDICS@ instance: each
+# connection serial2RUDICS.py makes to 127.0.0.1:@LOCALPORT@ becomes its own
+# ssh channel to @REMOTEHOST@:@REMOTEPORT@, so the triggerOn/triggerOff
+# open/close cycle per surfacing is preserved.
+#
+# python3 install.py --hostname @REMOTEHOST@ --port @REMOTEPORT@ \
+#	--tunnelProxy @PROXY@
+#
+# sudo systemctl start rudics-tunnel.service
+#
+# Jul-2026, Pat Welch, pat@mousebrains.com
+
+[Unit]
+Description=SSH tunnel to RUDICS listener on @REMOTEHOST@:@REMOTEPORT@
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+# Type=simple # Default
+User=@USERNAME@
+SyslogIdentifier=rudics-tunnel
+#
+# -N: no remote command, -T: no tty.
+# ExitOnForwardFailure: die (and let systemd retry) rather than sit connected
+#   with no forward, which would look healthy while refusing every connection.
+# ServerAlive*: drop the tunnel within ~90s of the path to the proxy going
+#   away, so the forwarded channels close, serial2RUDICS.py sees EOF and
+#   redials. Without this a dead path is invisible until --idleTimeout.
+# The forward is bound to 127.0.0.1 so the dockserver is not reachable through
+# this host from the rest of the LAN.
+ExecStart=@SSH@ -NT \
+	-o ExitOnForwardFailure=yes \
+	-o ServerAliveInterval=30 \
+	-o ServerAliveCountMax=3 \
+	-o BatchMode=yes \
+	-o IdentitiesOnly=yes \
+	-o StrictHostKeyChecking=yes \
+	-i @SSHKEY@ \
+	-L 127.0.0.1:@LOCALPORT@:@REMOTEHOST@:@REMOTEPORT@ \
+	@PROXY@
+
+Restart=always
+RestartSec=@TUNNELRESTARTSECONDS@
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+PrivateTmp=true
+# No ProtectHome: ssh reads @SSHKEY@ and ~/.ssh/known_hosts. Those stay
+# read-only under ProtectSystem, so known_hosts must be seeded before the
+# first start (BatchMode + StrictHostKeyChecking cannot prompt or write it).
+
+[Install]
+WantedBy=multi-user.target
