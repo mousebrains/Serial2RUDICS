@@ -1,18 +1,19 @@
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pytest
-import time
-import threading
 import socket
+import threading
+import time
 import types
 
-from RUDICS import RUDICS
-from RealSerial import RealSerial
-import FauxSerial
+import pytest
+
 import FauxDockServer
+import FauxSerial
+from RealSerial import RealSerial
+from RUDICS import RUDICS
 from serial2RUDICS import doit as _raw_doit
 from tests.conftest import make_args
 
@@ -53,13 +54,16 @@ def _build_surface_cycle(cycle: int) -> str:
 # ---------------------------------------------------------------------------
 
 def _make_faux_serial(tmp_path, mlg_bytes):
-    """Create a FauxSerial feeding *mlg_bytes* and return args with .serial set."""
+    """Create a FauxSerial feeding *mlg_bytes*; return (args, unstarted instance).
+
+    The instance is returned unstarted on purpose: its thread may only run
+    once RealSerial holds the PTY slave open. See FauxSerial.setup().
+    """
     mlg_file = tmp_path / "input.mlg"
     mlg_file.write_bytes(mlg_bytes)
     args = make_args(input=str(mlg_file), output="/dev/null")
-    pty_path = FauxSerial.setup(args)
-    args.serial = pty_path
-    return args
+    args.serial, faux = FauxSerial.setup(args)
+    return args, faux
 
 
 def _make_infrastructure(tmp_path, mlg_bytes, *, disconnected=True, **extra_args):
@@ -72,8 +76,9 @@ def _make_infrastructure(tmp_path, mlg_bytes, *, disconnected=True, **extra_args
     ds = FauxDockServer.FauxDS(ds_args)
     ds.start()
 
-    # FauxSerial feeding the MLG data
-    fs_args = _make_faux_serial(tmp_path, mlg_bytes)
+    # FauxSerial feeding the MLG data (thread started below, after the
+    # consumer opens the slave)
+    fs_args, faux = _make_faux_serial(tmp_path, mlg_bytes)
 
     # Merge everything into one args namespace
     merged = make_args(
@@ -90,6 +95,8 @@ def _make_infrastructure(tmp_path, mlg_bytes, *, disconnected=True, **extra_args
     )
 
     tty = RealSerial(merged)
+    if faux is not None:
+        faux.start() # Safe now: RealSerial holds the slave, so no hangup
     rudics = RUDICS(merged)
     return tty, rudics, ds
 
@@ -118,14 +125,14 @@ def test_full_dive_surface_cycle(tmp_path):
     # within a single batch.  We verify the cycle completed by checking
     # tLastClose (evidence that a connection was made then closed).
     mlg = (
-        "surface_0:2024/01/01 00:00:00 Waiting for final gps fix\r\n"
-        "sensor: depth=100 temp=12.3\r\n"
-        "surface_0:2024/01/01 01:00:00 Picking iridium or freewave\r\n"
-        "iridium: data transfer complete\r\n"
-        "surface_0:2024/01/01 02:00:00 Waiting for final gps fix\r\n"
-    ).encode()
+        b"surface_0:2024/01/01 00:00:00 Waiting for final gps fix\r\n"
+        b"sensor: depth=100 temp=12.3\r\n"
+        b"surface_0:2024/01/01 01:00:00 Picking iridium or freewave\r\n"
+        b"iridium: data transfer complete\r\n"
+        b"surface_0:2024/01/01 02:00:00 Waiting for final gps fix\r\n"
+    )
 
-    tty, rudics, ds = _make_infrastructure(tmp_path, mlg, disconnected=True)
+    tty, rudics, _ds = _make_infrastructure(tmp_path, mlg, disconnected=True)
     t = threading.Thread(target=doit, args=(tty, rudics), daemon=True)
     t.start()
     try:
@@ -147,12 +154,12 @@ def test_abort_triggers_connection(tmp_path):
     # The abort line has no subsequent triggerOff, so qWantOpen stays True
     # and the RUDICS socket remains connected (or was connected then idled out).
     mlg = (
-        "sensor: depth=10 temp=12.0\r\n"
-        "mission_0: abort_the_mission\r\n"
-        "sensor: depth=20 temp=11.5\r\n"
-    ).encode()
+        b"sensor: depth=10 temp=12.0\r\n"
+        b"mission_0: abort_the_mission\r\n"
+        b"sensor: depth=20 temp=11.5\r\n"
+    )
 
-    tty, rudics, ds = _make_infrastructure(tmp_path, mlg, disconnected=True)
+    tty, rudics, _ds = _make_infrastructure(tmp_path, mlg, disconnected=True)
     t = threading.Thread(target=doit, args=(tty, rudics), daemon=True)
     t.start()
     try:
@@ -219,14 +226,14 @@ def test_idle_timeout_disconnects():
 def test_binary_log_output(tmp_path):
     """Binary log file captures SERIAL markers when data flows."""
     mlg = (
-        "surface_0:2024/01/01 01:00:00 Picking iridium or freewave\r\n"
-        "iridium: some data payload here\r\n"
-    ).encode()
+        b"surface_0:2024/01/01 01:00:00 Picking iridium or freewave\r\n"
+        b"iridium: some data payload here\r\n"
+    )
 
     bin_file = tmp_path / "trace.bin"
 
     # Use disconnected=False so qWantOpen starts True and data is buffered.
-    tty, rudics, ds = _make_infrastructure(
+    tty, rudics, _ds = _make_infrastructure(
         tmp_path, mlg, disconnected=False, idleTimeout=2,
     )
     t = threading.Thread(
@@ -286,7 +293,7 @@ def test_multiple_surface_cycles(tmp_path):
     cycle1 = _build_surface_cycle(1)
     mlg = (cycle0 + cycle1).encode()
 
-    tty, rudics, ds = _make_infrastructure(
+    tty, rudics, _ds = _make_infrastructure(
         tmp_path, mlg, disconnected=True,
         idleTimeout=10,
     )

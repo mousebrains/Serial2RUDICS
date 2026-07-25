@@ -9,13 +9,13 @@ from unittest.mock import patch
 import serial
 import serial.serialutil
 
-from RealSerial import RealSerial, WRITE_CHUNK_BYTES
+from RealSerial import WRITE_CHUNK_BYTES, RealSerial
 from tests.conftest import make_args
 
 
 def _make_serial_args(**overrides):
     """Return args with serial=/dev/ttyUSB0 plus any overrides."""
-    defaults = dict(serial="/dev/ttyUSB0")
+    defaults = {"serial": "/dev/ttyUSB0"}
     defaults.update(overrides)
     return make_args(**defaults)
 
@@ -319,3 +319,35 @@ def test_outputFileno_returns_port_when_buffer_exists(mock_serial_cls, mock_fcnt
 def test_outputFileno_returns_none_when_buffer_empty(mock_serial_cls, mock_fcntl):
     rs = RealSerial(_make_serial_args())
     assert rs.outputFileno() is None
+
+
+# ── close() drops undeliverable output ───────────────────────────────
+
+@patch("fcntl.fcntl")
+@patch("serial.Serial")
+def test_close_clears_pending_buffer(mock_serial_cls, mock_fcntl):
+    """Bytes queued for a closed port can never be written, so drop them.
+
+    Keeping them leaves __bool__ true with no way to drain, which wedges
+    doit()'s `while serial or rudics` loop forever.
+    """
+    rs = RealSerial(_make_serial_args())
+    rs.put(b"unsent glider command")
+    assert bool(rs) is True
+
+    rs.close()
+
+    assert rs.buffer == bytearray()
+    assert bool(rs) is False, "a closed, drained port must let doit() exit"
+
+
+@patch("fcntl.fcntl")
+@patch("serial.Serial")
+def test_put_is_bounded_by_max_buffer(mock_serial_cls, mock_fcntl):
+    """The dockserver->glider direction is bounded like the reverse path."""
+    rs = RealSerial(_make_serial_args(maxBuffer=1024))
+    rs.put(b"a" * 1024)
+    rs.put(b"b" * 512)  # Over the limit, discarded
+
+    assert len(rs.buffer) == 1024
+    assert b"b" not in rs.buffer

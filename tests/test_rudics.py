@@ -1,15 +1,15 @@
 import math
+import os
 import re
 import select
 import socket
 import sys
-import os
 import time
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from RUDICS import RUDICS, MAX_BUFFER_SIZE, MAX_LINE_SIZE, BINARY_SESSION_SECS
+from RUDICS import BINARY_SESSION_SECS, MAX_BUFFER_SIZE, MAX_LINE_SIZE, RUDICS
 from tests.conftest import make_args
 
 
@@ -799,3 +799,156 @@ class TestTypeCatSuppression:
         # Now real trigger should work
         r.put(b"surface_0: Waiting for final gps fix\n")
         assert r.qWantOpen is False
+
+
+# ---------------------------------------------------------------------------
+# Idle demotion is re-armable (a silent glider must not lose the link for the
+# rest of the surfacing)
+# ---------------------------------------------------------------------------
+
+def test_close_marks_idle_demotion():
+    """close() after a long serial silence records why it dropped intent."""
+    r = RUDICS(make_args(reconnectMaxSerialIdle=600))
+    r.tLastSerialAction = time.monotonic() - 700  # Quiet for longer than the threshold
+    r.close()
+
+    assert r.qWantOpen is False
+    assert r.qIdleDemoted is True
+
+
+def test_close_does_not_mark_demotion_when_serial_is_active():
+    """A close() while the glider is talking leaves intent alone."""
+    r = RUDICS(make_args(reconnectMaxSerialIdle=600))
+    r.tLastSerialAction = time.monotonic()  # Talking right now
+    r.close()
+
+    assert r.qWantOpen is True
+    assert r.qIdleDemoted is False
+
+
+def test_serial_data_rearms_intent_after_idle_demotion():
+    """Serial output disproves 'the glider has gone quiet', so intent returns."""
+    r = RUDICS(make_args(reconnectMaxSerialIdle=600))
+    r.tLastSerialAction = time.monotonic() - 700
+    r.close()
+    assert r.qWantOpen is False
+
+    r.put(b'GliderDos A N >\r\n')  # No trigger match, just the glider talking
+
+    assert r.qWantOpen is True, "a talking glider must get its link back"
+    assert r.qIdleDemoted is False
+
+
+def test_rearmed_intent_buffers_the_data_that_rearmed_it():
+    """The bytes that prove the glider is alive are not thrown away."""
+    r = RUDICS(make_args(reconnectMaxSerialIdle=600))
+    r.tLastSerialAction = time.monotonic() - 700
+    r.close()
+
+    r.put(b'sensor: m_depth=0.4\r\n')
+
+    assert bytes(r.buffer) == b'sensor: m_depth=0.4\r\n'
+
+
+def test_triggeroff_demotion_is_not_rearmed_by_serial_data():
+    """A deliberate triggerOff stays off until the next triggerOn."""
+    r = RUDICS(make_args())
+    r.put(b'surface_1: Waiting for final gps fix\r\n')  # triggerOff
+    assert r.qWantOpen is False
+    assert r.qIdleDemoted is False
+
+    r.put(b'sensor: m_depth=12.0\r\n')  # Glider still chatting on the way down
+
+    assert r.qWantOpen is False, "dive must not be undone by ordinary output"
+    assert not r.buffer
+
+
+# ---------------------------------------------------------------------------
+# Socket stays non-blocking so a stalled dockserver cannot park the loop
+# ---------------------------------------------------------------------------
+
+def test_socket_is_non_blocking_after_connect():
+    """A blocking socket would stall doit()'s select loop inside send()."""
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    try:
+        r = RUDICS(make_args(host="127.0.0.1", port=srv.getsockname()[1]))
+        r.open()
+        _drive_connect(r)
+        conn, _ = srv.accept()
+        try:
+            assert r.s is not None
+            assert r.s.gettimeout() == 0.0, "socket must stay non-blocking"
+        finally:
+            conn.close()
+            r.close()
+    finally:
+        srv.close()
+
+
+def test_write_returns_zero_when_socket_buffer_is_full():
+    """EWOULDBLOCK means 'retry on the next select', not 'connection died'."""
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    try:
+        r = RUDICS(make_args(host="127.0.0.1", port=srv.getsockname()[1]))
+        r.open()
+        _drive_connect(r)
+        conn, _ = srv.accept()  # Accept but never read
+        try:
+            assert r.s is not None
+            total = 0
+            for _ in range(400):  # Fill the kernel socket buffer
+                n = r.write(b'x' * 64 * 1024)
+                total += n
+                if n == 0:
+                    break
+            assert n == 0, f"expected a short/zero write, sent {total} bytes"
+            assert r.s is not None, "a full socket buffer must not close the connection"
+        finally:
+            conn.close()
+            r.close()
+    finally:
+        srv.close()
+
+
+def test_get_does_not_close_on_would_block():
+    """A spurious readable wakeup must not be mistaken for a peer disconnect."""
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    try:
+        r = RUDICS(make_args(host="127.0.0.1", port=srv.getsockname()[1]))
+        r.open()
+        _drive_connect(r)
+        conn, _ = srv.accept()
+        try:
+            assert r.s is not None
+            c = r.get(1024)  # Nothing sent yet -> EWOULDBLOCK on a non-blocking socket
+
+            assert c == b''
+            assert r.qWouldBlock is True
+            assert r.s is not None, "socket must stay open on EWOULDBLOCK"
+        finally:
+            conn.close()
+            r.close()
+    finally:
+        srv.close()
+
+
+def test_write_is_capped_per_call():
+    """One writable wakeup cannot spend unbounded time copying to the kernel."""
+    from RUDICS import WRITE_CHUNK_BYTES
+
+    a, b = socket.socketpair()
+    try:
+        a.setblocking(False)  # As _finalizeConnect leaves a real socket
+        r = RUDICS(make_args())
+        r.s = a
+        n = r.write(b'y' * (4 * WRITE_CHUNK_BYTES))
+        assert 0 < n <= WRITE_CHUNK_BYTES
+    finally:
+        a.close()
+        b.close()

@@ -4,14 +4,16 @@
 #
 # Jan-2020, Pat Welch, pat@mousebrains.com
 
-import pty
-import os
-import threading
 import argparse
 import logging
+import os
+import pty
 import select
-from io import FileIO, BufferedWriter
+import threading
+from io import BufferedWriter, FileIO
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 def addArgs(parser: argparse.ArgumentParser) -> None:
     ''' Add my command line arguments '''
@@ -24,18 +26,20 @@ def addArgs(parser: argparse.ArgumentParser) -> None:
     optgrp.add_argument('--output', type=str,  default='/dev/null',
             help='File to write serial output to')
 
-def setup(args: argparse.Namespace) -> str:
-    ''' Return the serial device name to use, and start a ptty/thread if needed.
+def setup(args: argparse.Namespace) -> tuple[str, 'FauxSerial | None']:
+    ''' Return (device name, faux instance or None for a real serial port).
 
-    The created daemon thread keeps itself alive via threading._active; no
-    external reference is required.
+    The instance is deliberately NOT started. Between openpty() and the
+    consumer opening the device by name there is no slave fd, so the master
+    is hung up; the first select() in runMain would see it as exceptional and
+    tear the PTY down -- device node and all -- before the consumer gets
+    there. Callers must open the port first, then call start().
     '''
     if args.serial is not None:
         serial_port: str = args.serial
-        return serial_port
+        return serial_port, None
     instance = FauxSerial(args)
-    instance.start()
-    return instance.port
+    return instance.port, instance
 
 class FauxSerial(threading.Thread):
     ''' Create a pseudo-tty and read from a file and send to the ptty and the inverse '''
@@ -44,13 +48,17 @@ class FauxSerial(threading.Thread):
         self.args = args
         (self.master, slave) = pty.openpty() # Create a pseudo-tty pair
         self.port = os.ttyname(slave)
-        os.close(slave) # Close our copy; device remains accessible via master
+        # Close our copy; the consumer opens the device by name. Until it
+        # does, the master is hung up, which is why this thread must not be
+        # started before that happens -- see setup(). Holding the fd here
+        # instead would remove the hangup that signals consumer shutdown.
+        os.close(slave)
 
     def run(self) -> None: # Called on start
         try:
             self.runMain()
         except Exception:
-            logging.exception('Exception in FauxSerial')
+            logger.exception('Exception in FauxSerial')
 
     def runMain(self) -> None:
         args = self.args
@@ -61,11 +69,13 @@ class FauxSerial(threading.Thread):
 
         qMagic = ofn == '/dev/null'
 
-        ifp: FileIO | None = open(ifn, 'rb', buffering=0)
-        ofp: BufferedWriter | None = open(ofn, 'wb')
+        # SIM115: both handles live across the select loop below and are
+        # closed in its finally block, which is the context manager here.
+        ifp: FileIO | None = open(ifn, 'rb', buffering=0)  # noqa: SIM115
+        ofp: BufferedWriter | None = open(ofn, 'wb')  # noqa: SIM115
 
-        logging.info('FauxSerial opened %s for input', ifn)
-        logging.info('FauxSerial opened %s for output', ofn)
+        logger.info('FauxSerial opened %s for input', ifn)
+        logger.info('FauxSerial opened %s for output', ofn)
 
         maxSize = 65536 # Maximum length of internal select buffers
         toSerial = bytearray() # Buffer to send to pseudo-tty
@@ -89,7 +99,7 @@ class FauxSerial(threading.Thread):
                     if ofp is not None:
                         ofp.close()
                     ofp = None
-                    logging.info('FauxSerial closing output, %s, since master is None', ofn)
+                    logger.info('FauxSerial closing output, %s, since master is None', ofn)
                     break
 
                 if ifp is not None:
@@ -104,7 +114,7 @@ class FauxSerial(threading.Thread):
                 (ifps, ofps, efps) = select.select(inputs, outputs, exceptables, dtExtra)
 
                 if not ifps and not ofps and not efps: # Timeout
-                    logging.info('FauxSerial shutting down due to timeout')
+                    logger.info('FauxSerial shutting down due to timeout')
                     if master is not None:
                         os.close(master)
                         master = None
@@ -119,7 +129,7 @@ class FauxSerial(threading.Thread):
                 for fp in efps:
                     os.close(fp) # Close the master on exception
                     master = None
-                    logging.info('FauxSerial Closing master PTY, %s', fp)
+                    logger.info('FauxSerial Closing master PTY, %s', fp)
 
                 if efps:
                     continue
@@ -129,7 +139,7 @@ class FauxSerial(threading.Thread):
                         try:
                             toFile += os.read(fp, 1)
                         except OSError:
-                            logging.info('FauxSerial master read error, closing PTY')
+                            logger.info('FauxSerial master read error, closing PTY')
                             os.close(fp)
                             master = None
                     else:
@@ -138,7 +148,7 @@ class FauxSerial(threading.Thread):
                             if ifp is not None:
                                 ifp.close()
                             ifp = None
-                            logging.info('FauxSerial Closed %s', ifn)
+                            logger.info('FauxSerial Closed %s', ifn)
                         else:
                             toSerial += c
 
@@ -150,7 +160,7 @@ class FauxSerial(threading.Thread):
                             n = os.write(fp, toSerial)
                             del toSerial[:n]
                         except OSError:
-                            logging.info('FauxSerial master write error, closing PTY')
+                            logger.info('FauxSerial master write error, closing PTY')
                             os.close(fp)
                             master = None
                     else:
@@ -158,7 +168,7 @@ class FauxSerial(threading.Thread):
                         fp.flush()
                         del toFile[:n]
 
-            logging.info('FauxSerial Fell out of while loop')
+            logger.info('FauxSerial Fell out of while loop')
         finally:
             if master is not None:
                 os.close(master)
