@@ -54,6 +54,8 @@ class TestConstruction:
         r = RUDICS(make_args(triggerOff=["custom_off_trigger"]))
         assert r.triggerOff.search(b"custom_off_trigger") is not None
         assert r.triggerOff.search(b"surface_0: Waiting for final gps fix") is None
+        assert r.triggerOff.search(
+            b"behavior prepare_to_dive_9: SUBSTATE 0 UnInited->1 : Waiting for initial GPS fix") is None
 
     def test_seconds_per_byte_none_without_baudrate(self):
         r = RUDICS(make_args(rudicsBaudrate=None))
@@ -98,6 +100,52 @@ class TestPut:
         r.put(b"surface_0:2024/01/01 00:00:00 Waiting for final gps fix\n")
         assert r.qWantOpen is False
 
+    @pytest.mark.parametrize("line", [
+        # Real glider (sl684 01670000.mlg) and shoebox (ttyUSB1, 2026-11-08)
+        b"  7.92    behavior prepare_to_dive_10: SUBSTATE 0 UnInited->1 : Waiting for initial GPS fix\r\n",
+        b" 62.86    behavior prepare_to_dive_9: SUBSTATE 0 UnInited->1 : Waiting for initial GPS fix\r\n",
+    ])
+    def test_trigger_off_mission_start(self, line):
+        """A mission start drops the link while prepare_to_dive waits for its
+        first fix, as a real glider hangs up Iridium then -- the first dive is
+        not spent connected."""
+        r = RUDICS(make_args())
+        assert r.qWantOpen is True
+        r.put(line)
+        assert r.qWantOpen is False
+        assert len(r.buffer) == 0
+
+    @pytest.mark.parametrize("line", [
+        # Printed mid-surfacing, while the link must stay up (osusim ttyUSB0)
+        b"surface_5: Waiting for initial GPS fix.\r\n",
+        b"  3758    behavior surface_5: SUBSTATE 2 ->3 : waiting for GPS fix\r\n",
+        # Other prepare_to_dive transitions around the mission start
+        b" 62.60    behavior prepare_to_dive_9: STATE UnInited -> Waiting for Activation\r\n",
+        b" 62.81    behavior prepare_to_dive_9: STATE Waiting for Activation -> Active\r\n",
+        # Short surface-only missions also activate abend; a real glider keeps
+        # its call through those, so mission start is keyed on prepare_to_dive
+        b"  6.88    behavior abend_1: STATE UnInited -> Active\r\n",
+    ])
+    def test_no_trigger_off_on_lookalike_lines(self, line):
+        r = RUDICS(make_args())
+        r.put(line)
+        assert r.qWantOpen is True
+
+    def test_mission_start_then_first_surfacing(self):
+        """Run a mission while connected: down at the GPS wait, silent through
+        the dive, back up at the first surfacing."""
+        r = RUDICS(make_args())
+        r.put(b"Starting Mission: SFMC.MI\r\n")
+        r.put(b" 62.86    behavior prepare_to_dive_9: SUBSTATE 0 UnInited->1 : "
+              b"Waiting for initial GPS fix\r\n")
+        assert r.qWantOpen is False
+        r.put(b" 77.79    behavior prepare_to_dive_9: STATE Active -> Complete\r\n"
+              b" 77.92    behavior dive_to_701: STATE UnInited -> Active\r\n")
+        assert r.qWantOpen is False
+        assert len(r.buffer) == 0  # dive output is logged, never sent
+        r.put(b"  3801    behavior surface_5: SUBSTATE 3 ->4 : Picking iridium or freewave\r\n")
+        assert r.qWantOpen is True
+
     def test_state_active_no_longer_default_trigger_off(self):
         """STATE Active -> was removed as a default triggerOff to avoid
         prematurely closing the RUDICS connection after a user sends Ctrl-C,
@@ -115,14 +163,20 @@ class TestPut:
         r.put(b"surface_1:2024/01/01 01:00:00 STATE Active ->\n")
         assert r.qWantOpen is False
 
-    def test_binary_data_suppresses_trigger_off(self):
+    @pytest.mark.parametrize("line", [
+        b"surface_0: Waiting for final gps fix\n",
+        # Every mission's first .mlg carries this; pulling it mid-surfacing
+        # must not drop the link.
+        b"  7.92    behavior prepare_to_dive_10: SUBSTATE 0 UnInited->1 : Waiting for initial GPS fix\n",
+    ])
+    def test_binary_data_suppresses_trigger_off(self, line):
         """File transfer binary framing should suppress trigger matching."""
         r = RUDICS(make_args())
         assert r.qWantOpen is True
         # Binary file transfer data (simulating *\x18C header)
         r.put(b"*\x18C\x04\x00\x00\x00filename.sbd\x00")
         # Now send a line that would normally trigger off
-        r.put(b"surface_0: Waiting for final gps fix\n")
+        r.put(line)
         # Should NOT have triggered because binary data was just seen
         assert r.qWantOpen is True
 

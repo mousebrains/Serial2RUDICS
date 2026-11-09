@@ -44,7 +44,16 @@ class RUDICS:
                 )
         self.triggerOff = self.__mkTrigger(args.triggerOff,
                 [
+                    # End of a surfacing: the glider hangs up Iridium ~5s later.
                     r'surface_\d+:.*Waiting\s+for\s+final\s+gps\s+fix',
+                    # Mission start. A real glider hangs up Iridium as soon as
+                    # its behavior stack is up, while prepare_to_dive waits for
+                    # its first fix (sl684/sl685 .mlg: "disabling Iridium
+                    # console..." a median 1s after this line, n=42), so the
+                    # first dive is never connected. Anchored on
+                    # prepare_to_dive: surface_N prints its own "Waiting for
+                    # initial GPS fix." mid-surfacing and must not match.
+                    r'prepare_to_dive_\d+:.*Waiting\s+for\s+initial\s+gps\s+fix',
                     ]
                 )
         self.secondsPerByte: float | None = \
@@ -63,9 +72,9 @@ class RUDICS:
         self.tLastSerialAction: float | None = None
         # Intent. After construction this is written ONLY by triggerOn and
         # triggerOff in put(), so the SFMC session mirrors the glider: up for
-        # the whole surfacing, down for the whole dive, like a real Iridium
-        # call. Nothing else -- not close(), not a timeout, not a failed
-        # connect -- may change it.
+        # the whole surfacing, down for the whole dive (the first dive of a
+        # mission included), like a real Iridium call. Nothing else -- not
+        # close(), not a timeout, not a failed connect -- may change it.
         self.qWantOpen = not args.disconnected
         # Redial spacing after a close. Grows while the glider is silent so a
         # dead SFMC or a quiet glider cannot be redialed at full rate; any
