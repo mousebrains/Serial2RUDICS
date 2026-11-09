@@ -7,7 +7,7 @@ We connect pocket simulators, shoebox simulators, and Slocum gliders to the seri
 
 All the output of the simulators is logged.
 
-Initially all output is sent to the dockserver via a RUDICS style connection. The RUDICS connection is dropped after the first dive. Then reestablished upon surfacing. 
+Initially all output is sent to the dockserver via a RUDICS style connection. The RUDICS connection is dropped when the glider starts a mission or finishes a surfacing, and reestablished upon surfacing.
 The pocket/shoebox/glider is now only connected while on the surface, similar to a real glider.
 
 ## Dependencies
@@ -147,7 +147,9 @@ sudo systemctl status 'USBToRUDICS@ttyUSB*'        # all instances
 
 ### Trigger / suppression behavior
 
-Default triggers open RUDICS on `surface_<n>: ... Picking iridium or freewave` or `abort_the_mission`, and close it on `surface_<n>: ... Waiting for final gps fix`. Custom patterns are appendable via repeated `--triggerOn`/`--triggerOff`.
+Default triggers open RUDICS on `surface_<n>: ... Picking iridium or freewave` or `abort_the_mission`, and close it on `surface_<n>: ... Waiting for final gps fix` (end of a surfacing) or `prepare_to_dive_<n>: ... Waiting for initial GPS fix` (mission start). The mission-start trigger mirrors a real glider, which hangs up Iridium about a second after that line, once its behavior stack is up, so the first dive of a mission is not spent connected. It is keyed on `prepare_to_dive` because `surface_<n>` prints its own `Waiting for initial GPS fix.` mid-surfacing. Passing `--triggerOn`/`--triggerOff` replaces the defaults; repeat the flag to give several patterns.
+
+Trigger matching is suppressed while a file is moving, since a transferred `.mlg` contains every trigger phrase: on any line with non-text bytes, for 30 s after the last non-text byte (zmodem), and during `type`/`cat` output.
 
 ### Connection intent
 
